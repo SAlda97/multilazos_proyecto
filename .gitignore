@@ -1,0 +1,28 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.eggs/
+
+# === Entorno virtual ===
+.venv/
+env/
+venv/
+
+# === Archivos temporales ===
+*.log
+*.pot
+*.pyc
+*.pyo
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+
+# === Django ===
+db.sqlite3
+media/
+staticfiles/

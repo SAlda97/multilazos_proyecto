@@ -34,3 +34,4 @@ def auth_me(request):
         return JsonResponse({"detail": "No autenticado"}, status=401)
     u = request.user
     return JsonResponse({"username": u.username, "is_staff": u.is_staff})
+
