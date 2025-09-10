@@ -1,0 +1,52 @@
+:root{
+  --blue-900:#0b2e6b;    /* azul profundo */
+  --blue-700:#1f4fa3;    /* azul principal */
+  --blue-500:#2a6ac3;    /* hover/borde */
+  --blue-100:#e6eef9;    /* fondo claro */
+  --orange-500:#f58220;  /* acento */
+  --grey-800:#1f2a44;    /* texto */
+  --grey-600:#4a5874;    /* secundario */
+  --grey-200:#e9edf5;    /* borde */
+  --white:#fff;
+  --radius:14px;
+  --shadow:0 6px 16px rgba(15,35,75,.08);
+}
+
+*{box-sizing:border-box}
+html,body,#root{height:100%}
+body{margin:0;font-family:system-ui,Segoe UI,Roboto,Arial;color:var(--grey-800);background:var(--blue-100)}
+
+button{
+  cursor:pointer;border:0;border-radius:12px;padding:.7rem 1rem;
+  background:var(--blue-700);color:var(--white);font-weight:600;box-shadow:var(--shadow);transition:.2s
+}
+button:hover{background:var(--blue-500)}
+button.secondary{background:var(--grey-200);color:var(--grey-800)}
+button.warn{background:var(--orange-500)}
+
+.input,.select{
+  width:100%;padding:.65rem .9rem;border:1px solid var(--grey-200);border-radius:12px;background:var(--white);outline:none
+}
+.input:focus,.select:focus{border-color:var(--blue-500);box-shadow:0 0 0 3px rgba(42,106,195,.15)}
+
+.card{background:var(--white);border-radius:var(--radius);box-shadow:var(--shadow);padding:1rem}
+
+.layout{
+  display:grid;grid-template-columns:260px 1fr;grid-template-rows:64px 1fr;
+  grid-template-areas:"sidebar topbar" "sidebar content";height:100%
+}
+.sidebar{grid-area:sidebar;background:var(--white);border-right:1px solid var(--grey-200)}
+.topbar{grid-area:topbar;background:var(--white);border-bottom:1px solid var(--grey-200)}
+.content{grid-area:content;padding:1.2rem;overflow:auto}
+.nav-link{display:flex;gap:.6rem;align-items:center;padding:.7rem 1rem;margin:.3rem .6rem;border-radius:12px;text-decoration:none;color:var(--grey-800);font-weight:600}
+.nav-link.active,.nav-link:hover{background:rgba(31,79,163,.08);color:var(--blue-700)}
+.brand{font-weight:900;color:var(--blue-900)}
+
+.table{width:100%;border-collapse:separate;border-spacing:0}
+.table th,.table td{padding:.75rem;border-bottom:1px solid var(--grey-200);text-align:left}
+.badge{display:inline-block;padding:.25rem .55rem;border-radius:999px;font-size:.75rem;background:var(--blue-100);color:var(--blue-700);font-weight:700}
+
+@media (max-width: 900px){
+  .layout{grid-template-columns:1fr;grid-template-rows:56px auto 1fr;grid-template-areas:"topbar""sidebar""content"}
+  .sidebar{border-right:none;border-bottom:1px solid var(--grey-200)}
+}
