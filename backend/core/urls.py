@@ -1,6 +1,6 @@
 # core/urls.py
 from django.urls import path
-from .views import health, auth_login, auth_logout, auth_me  # importa solo lo que usas
+from .views import health, auth_login, auth_logout, auth_me  
 
 urlpatterns = [
     path("health/", health, name="health"),
