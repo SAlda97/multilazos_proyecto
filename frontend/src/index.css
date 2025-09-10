@@ -50,3 +50,34 @@ button.warn{background:var(--orange-500)}
   .layout{grid-template-columns:1fr;grid-template-rows:56px auto 1fr;grid-template-areas:"topbar""sidebar""content"}
   .sidebar{border-right:none;border-bottom:1px solid var(--grey-200)}
 }
+
+/* === Sidebar: encabezados de sección (Análisis, Operación, Cartera, etc.) === */
+.sidebar details.section { margin: .4rem .6rem; }
+
+/* Estilo del <summary> (el “botón” de la sección) */
+.sidebar details.section > summary {
+  list-style: none;                 /* quita el marcador por defecto */
+  background: var(--blue-700);      /* fondo azul */
+  color: var(--white);              /* texto blanco ✅ */
+  font-weight: 700;
+  border-radius: 12px;
+  padding: .7rem 1rem;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  user-select: none;
+}
+
+/* Hover / activo */
+.sidebar details.section > summary:hover { background: var(--blue-500); }
+.sidebar details.section[open] > summary { background: var(--blue-900); }
+
+/* Quita flechita de Chrome/Safari y similares */
+.sidebar details.section > summary::-webkit-details-marker { display: none; }
+
+/* Contenedor de los links dentro de cada sección */
+.sidebar .section-body {
+  padding: .4rem 0 .2rem;
+}

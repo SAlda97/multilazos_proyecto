@@ -15,7 +15,7 @@ class Command(BaseCommand):
         rows = 0
         try:
             with connection.cursor() as cur:
-                cur.execute(f"EXEC {proc}")  # OJO: el SP debe existir en tu BD
+                cur.execute(f"EXEC {proc}")  # SP en bd existente
                 try:
                     rows = cur.rowcount if cur.rowcount is not None else 0
                 except Exception:
