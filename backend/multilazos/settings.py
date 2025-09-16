@@ -25,7 +25,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",   # API con Django Rest Framework
-    "core",             # Nuestra app base
+    "core",             # app base
     "corsheaders",
     "etl",
 
