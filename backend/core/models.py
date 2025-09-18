@@ -23,3 +23,25 @@ class CategoriaProducto(models.Model):
 
     def __str__(self):
         return self.nombre_categoria
+    
+class TipoTransaccion(models.Model):
+    id_tipo_transaccion = models.AutoField(primary_key=True, db_column='id_tipo_transaccion')
+    nombre_tipo_transaccion = models.CharField(max_length=100, unique=True, db_column='nombre_tipo_transaccion')
+
+    class Meta:
+        managed = False
+        db_table = 'tipo_transacciones'
+
+    def __str__(self):
+        return self.nombre_tipo_transaccion
+
+class CategoriaGasto(models.Model):
+    id_categoria_gastos = models.AutoField(primary_key=True, db_column='id_categoria_gastos')
+    nombre_categoria = models.CharField(max_length=100, unique=True, db_column='nombre_categoria')
+
+    class Meta:
+        managed = False
+        db_table = 'categoria_gastos'  
+
+    def __str__(self):
+        return self.nombre_categoria
