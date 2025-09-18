@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { exportTableToPDF } from "../../utils/exportPdf";
 
 export type Row = { id: number; nombre: string };
 
@@ -28,6 +29,17 @@ export type CatalogProps = {
     render: (row: Row) => React.ReactNode;
     alignRight?: boolean;
   }>;
+
+   // <<< NUEVO: configuración para exportar PDF (reutilizable)
+  exportPdf?: {
+    filename?: string;
+    headers: (string | number)[];
+    mapRow: (row: Row) => (string | number)[];
+    footerNote?: string;
+    confirm?: boolean;                 // default: true
+    confirmMessage?: string;  
+  };
+
 };
 
 export default function CatalogScaffold(props: CatalogProps) {
@@ -47,6 +59,7 @@ export default function CatalogScaffold(props: CatalogProps) {
     onEditClick,
     onDeleteClick,
     onNewClick,     
+    exportPdf,          
   } = props;
 
   // detecta modo controlado si vienen rows
@@ -141,6 +154,27 @@ export default function CatalogScaffold(props: CatalogProps) {
     onDelete(row.id);
   }
 
+    function handleExportPdf() {
+    if (!exportPdf) return;
+
+    const mustConfirm = exportPdf.confirm !== false;
+    if (mustConfirm) {
+      const ok = confirm(exportPdf.confirmMessage ?? "¿Desea exportar a PDF la página visible?");
+      if (!ok) return;
+    }
+    
+    const rowsForPdf = (pageData ?? []).map(exportPdf.mapRow);
+    exportTableToPDF({
+      title: titulo,
+      headers: exportPdf.headers,
+      rows: rowsForPdf,
+      filename: exportPdf.filename,
+      footerNote: exportPdf.footerNote ?? `Registros en la página: ${pageData.length} / Total: ${total}`,
+    });
+  }
+
+
+
   return (
     <div style={{ display: "grid", gap: "1rem" }}>
       {/* Filtros */}
@@ -171,8 +205,7 @@ export default function CatalogScaffold(props: CatalogProps) {
           Registros visibles: <b>{registrosVisibles}</b> / <b>{total}</b>
         </span>
         <div style={{ marginLeft: "auto", display: "flex", gap: ".5rem" }}>
-          <button className="secondary">Exportar CSV (UI)</button>
-          <button className="secondary">Imprimir (UI)</button>
+          <button className="secondary" onClick={handleExportPdf}>Exportar PDF</button>
         </div>
       </div>
 
