@@ -1,0 +1,19 @@
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Python
+**/__pycache__/
+*.pyc
+.venv/
+db.sqlite3
+
+# Logs
+*.log
+
+# Sistema / IDE
+.vscode/
+.DS_Store
+Thumbs.db
