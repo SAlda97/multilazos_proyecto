@@ -1,12 +1,12 @@
 # core/views_clientes.py
-from rest_framework.generics import ListAPIView, RetrieveUpdateDestroyAPIView, ListCreateAPIView
+from rest_framework.generics import  RetrieveUpdateDestroyAPIView, ListCreateAPIView
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny
 from django.db.models import Q
-from rest_framework import viewsets, filters
 
-from .models import TipoCliente, CategoriaProducto
-from .serializers import TipoClienteSerializer, CategoriaProductoSerializer
+
+from .models import TipoCliente
+from .serializers import TipoClienteSerializer
 
 class SmallPagePagination(PageNumberPagination):
     page_size = 10                 # ajusta si deseas
@@ -31,11 +31,3 @@ class TipoClienteDetailView(RetrieveUpdateDestroyAPIView):
     serializer_class = TipoClienteSerializer
     lookup_field = 'id_tipo_cliente'
 
-class CategoriaProductoViewSet(viewsets.ModelViewSet):
-    queryset = CategoriaProducto.objects.all()
-    serializer_class = CategoriaProductoSerializer
-    pagination_class = SmallPagePagination
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ['nombre_categoria']     # permite ?search=texto
-    ordering_fields = ['id_categoria', 'nombre_categoria']
-    ordering = ['id_categoria']

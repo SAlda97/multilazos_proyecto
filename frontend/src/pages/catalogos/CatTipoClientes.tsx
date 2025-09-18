@@ -136,6 +136,15 @@ export default function CatTipoClientes() {
             render: (r) => (r as RowExt).tasa.toFixed(2),
           },
         ]}
+        exportPdf={{
+          filename: "tipos-de-cliente.pdf",
+          headers: ["ID", "Nombre", "Tasa interés (%)"],
+          mapRow: (r) => {
+            const tasa = (r as any).tasa ?? "";
+            return [r.id, r.nombre, typeof tasa === "number" ? tasa.toFixed(2) : tasa];
+          },
+          footerNote: "Exportado desde Multilazos • Catálogo de tipos de cliente",
+        }}
       />
 
       {/* Modal NUEVO/EDITAR */}
