@@ -1,337 +1,295 @@
-import { useMemo, useState } from "react";
-import EmptyState from "../components/EmptyState";
+// frontend/src/pages/Gastos.tsx
+import { useEffect, useMemo, useState } from "react";
+import CatalogScaffold, { type Row } from "./catalogos/_CatalogScaffold";
+import { listGastos, createGasto, updateGasto, deleteGasto } from "../services/gastos";
+import { listCategoriaGastos } from "../services/categoriaGastos";
+import { getIdFechaByDate, getFechaById } from "../services/dimFecha";
+import type { Gasto } from "../types/gastos";
+import type { CategoriaGasto } from "../types/categoriaGastos";
 
-/** Modelos alineados al script:
- *  - gastos: id_gasto, nombre_gasto, monto_gasto, id_fecha, id_categoria_gastos
- *  - categoria_gastos: id_categoria_gastos, nombre_categoria
- *  - dim_fecha: usaremos date ISO para la UI; backend mapeará a id_fecha
- */
-
-type TGasto = {
-  id: number;
-  nombre: string;
-  monto: number;           // Q
-  fecha: string;           // ISO yyyy-mm-dd (UI)
-  idCategoria: number;
-  categoria: string;       // denormalizado para UI
+type RowExt = Row & {
+  monto: number;
+  fecha: string;         // YYYY-MM-DD
+  categoria: string;
+  idFechaNum: number;    // respaldo por si necesitamos resolver fecha
 };
 
-type TFiltroRango = { desde: string; hasta: string };
-
-function validar(g: Omit<TGasto, "id" | "categoria">) {
-  const e: Record<string, string> = {};
-  if (!g.nombre.trim()) e.nombre = "Nombre obligatorio.";
-  if (g.monto <= 0) e.monto = "El monto debe ser > 0.";
-  if (!g.fecha) e.fecha = "Fecha obligatoria.";
-  if (!g.idCategoria) e.idCategoria = "Seleccione la categoría.";
-  return e;
+function todayISO() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 export default function Gastos() {
-  // Estado de datos (solo UI)
-  const [data, setData] = useState<TGasto[]>([]);
-  const [categorias, setCategorias] = useState<{ id: number; nombre: string }[]>(
-    [] // cuando haya backend vendrán de /api/categoria_gastos
-  );
-
-  // Filtros
+  const [rows, setRows] = useState<RowExt[]>([]);
+  const [count, setCount] = useState(0);
+  const [page, setPage] = useState(1);
   const [q, setQ] = useState("");
-  const [cat, setCat] = useState<number | 0>(0);
-  const [rango, setRango] = useState<TFiltroRango>({ desde: "", hasta: "" });
+  const [loading, setLoading] = useState(false);
 
-  // Modal CRUD
+  // categorías
+  const [categorias, setCategorias] = useState<CategoriaGasto[]>([]);
+
+  // modal (crear/editar)
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
-  const [form, setForm] = useState<Omit<TGasto, "id" | "categoria">>({
-    nombre: "",
-    monto: 0,
-    fecha: "",
-    idCategoria: 0,
-  });
-  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [form, setForm] = useState<{
+    nombre: string;
+    monto: string;
+    fecha: string;                // YYYY-MM-DD visible
+    id_categoria_gastos: string;
+  }>({ nombre: "", monto: "", fecha: todayISO(), id_categoria_gastos: "" });
+  const [saving, setSaving] = useState(false);
 
-  const catIndex = useMemo(() => {
-    const idx = new Map<number, string>();
-    categorias.forEach((c) => idx.set(c.id, c.nombre));
-    return idx;
-  }, [categorias]);
-
-  const filtered = useMemo(() => {
-    return data.filter((g) => {
-      const t = [g.nombre, g.categoria, g.fecha, `Q${g.monto.toFixed(2)}`]
-        .join(" ")
-        .toLowerCase();
-      const okTexto = t.includes(q.toLowerCase());
-      const okCat = !cat || g.idCategoria === cat;
-      const okDesde = !rango.desde || g.fecha >= rango.desde;
-      const okHasta = !rango.hasta || g.fecha <= rango.hasta;
-      return okTexto && okCat && okDesde && okHasta;
-    });
-  }, [data, q, cat, rango]);
-
-  // Totales por la selección visible
-  const totalVisible = filtered.reduce((acc, g) => acc + g.monto, 0);
-
-  // Paginación simple
-  const [page, setPage] = useState(1);
   const pageSize = 10;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageData = useMemo(() => {
-    const i = (page - 1) * pageSize;
-    return filtered.slice(i, i + pageSize);
-  }, [filtered, page]);
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(count / pageSize)), [count]);
 
-  function limpiar() {
-    setQ("");
-    setCat(0);
-    setRango({ desde: "", hasta: "" });
-    setPage(1);
+  async function loadCategorias() {
+    const res = await listCategoriaGastos({ page: 1, page_size: 1000 });
+    setCategorias(res.results);
   }
 
-  // CRUD (UI)
-  function onNew() {
-    setEditId(null);
-    setForm({ nombre: "", monto: 0, fecha: "", idCategoria: 0 });
-    setErrors({});
-    setOpen(true);
-  }
-  function onEdit(id: number) {
-    const g = data.find((x) => x.id === id);
-    if (!g) return;
-    setEditId(id);
-    setForm({
-      nombre: g.nombre,
-      monto: g.monto,
-      fecha: g.fecha,
-      idCategoria: g.idCategoria,
-    });
-    setErrors({});
-    setOpen(true);
-  }
-  function onDelete(id: number) {
-    if (confirm("¿Eliminar gasto? (UI)")) setData((d) => d.filter((x) => x.id !== id));
-  }
-  function onSave(e: React.FormEvent) {
-    e.preventDefault();
-    const v = validar(form);
-    setErrors(v);
-    if (Object.keys(v).length) return;
+  // Resuelve fechas faltantes consultando /dim-fecha/<id>
+  async function hydrateMissingDates(list: RowExt[]) {
+    const missing = list.filter(r => !r.fecha && r.idFechaNum);
+    if (missing.length === 0) return list;
 
-    const nomCat = catIndex.get(form.idCategoria) || "Sin categoría";
-    if (editId == null) {
-      const next = Math.max(0, ...data.map((x) => x.id)) + 1;
-      setData((d) => [...d, { id: next, categoria: nomCat, ...form }]);
-    } else {
-      setData((d) =>
-        d.map((x) => (x.id === editId ? { id: editId, categoria: nomCat, ...form } : x))
-      );
+    const uniqueIds = Array.from(new Set(missing.map(m => m.idFechaNum)));
+    const pairs = await Promise.all(
+      uniqueIds.map(async id => {
+        try {
+          const df = await getFechaById(id);
+          return [id, df.fecha] as const;
+        } catch {
+          return [id, ""] as const;
+        }
+      })
+    );
+    const map = new Map<number, string>(pairs);
+
+    return list.map(r => (r.fecha ? r : { ...r, fecha: map.get(r.idFechaNum) || "" }));
+  }
+
+  async function load(p = page, query = q) {
+    setLoading(true);
+    try {
+      const res = await listGastos({ page: p, page_size: pageSize, search: query || undefined });
+      const mapped: RowExt[] = res.results.map((g: Gasto) => ({
+        id: g.id_gasto,
+        nombre: g.nombre_gasto,
+        monto: Number(g.monto_gasto),
+        idFechaNum: g.id_fecha,
+        fecha: (g as any).fecha || "", // si el backend ya envía 'fecha', se usa; si no, se hidrata abajo
+        categoria: g.nombre_categoria_gasto || "",
+      }));
+
+      const withDates = await hydrateMissingDates(mapped);
+      setRows(withDates);
+      setCount(res.count);
+      setPage(p);
+    } finally {
+      setLoading(false);
     }
-    setOpen(false);
   }
 
-  // Para evidencia UI: seed pequeño de categorías si está vacío
-  function seedCategoriasUI() {
-    if (categorias.length) return;
-    setCategorias([
-      { id: 1, nombre: "Logística" },
-      { id: 2, nombre: "Servicios" },
-      { id: 3, nombre: "Operación" },
-      { id: 4, nombre: "Marketing" },
-    ]);
+  useEffect(() => {
+    loadCategorias();
+    load(1, q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // NUEVO
+  function onNewClick() {
+    setEditId(null);
+    setForm({ nombre: "", monto: "", fecha: todayISO(), id_categoria_gastos: "" });
+    setOpen(true);
+  }
+
+  // EDITAR
+  async function onEditClick(row: Row) {
+    const r = rows.find((x) => x.id === row.id);
+    if (!r) return;
+
+    let fechaISO = r.fecha;
+    if (!fechaISO && r.idFechaNum) {
+      try {
+        const df = await getFechaById(r.idFechaNum);
+        fechaISO = df.fecha;
+      } catch { /* noop */ }
+    }
+
+    const cat = categorias.find((c) => c.nombre_categoria === r.categoria);
+    setEditId(r.id);
+    setForm({
+      nombre: r.nombre,
+      monto: r.monto.toString(),
+      fecha: fechaISO || todayISO(),
+      id_categoria_gastos: (cat?.id_categoria_gastos ?? "").toString(),
+    });
+    setOpen(true);
+  }
+
+  // ELIMINAR
+  async function onDeleteClick(row: Row) {
+    const r = rows.find((x) => x.id === row.id);
+    if (!r) return;
+    const ok = confirm(`¿Eliminar el gasto "${r.nombre}"?`);
+    if (!ok) return;
+    try {
+      setLoading(true);
+      await deleteGasto(r.id);
+      const nextPage = rows.length === 1 && page > 1 ? page - 1 : page;
+      await load(nextPage, q);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // GUARDAR
+  async function onSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!confirm("¿Desea guardar los cambios?")) return;
+
+    const nombre = form.nombre.trim();
+    const montoNum = Number(form.monto);
+    const catId = Number(form.id_categoria_gastos);
+    const fechaISO = form.fecha; // YYYY-MM-DD
+
+    if (!nombre) { alert("El nombre es obligatorio."); return; }
+    if (nombre.length > 100) { alert("El nombre no puede exceder 100 caracteres."); return; }
+    if (Number.isNaN(montoNum) || montoNum < 0) { alert("El monto debe ser un número ≥ 0."); return; }
+    if (!fechaISO) { alert("Debe seleccionar la fecha."); return; }
+    if (!catId || Number.isNaN(catId)) { alert("Debe seleccionar la categoría de gasto."); return; }
+
+    try {
+      setSaving(true);
+      // 1) Convertimos fecha → id_fecha
+      const { id_fecha } = await getIdFechaByDate(fechaISO);
+
+      if (editId == null) {
+        await createGasto({
+          nombre_gasto: nombre,
+          monto_gasto: montoNum,
+          id_fecha,
+          id_categoria_gastos: catId,
+        });
+        await load(1, q);
+      } else {
+        await updateGasto(editId, {
+          nombre_gasto: nombre,
+          monto_gasto: montoNum,
+          id_fecha,
+          id_categoria_gastos: catId,
+        });
+        await load(page, q);
+      }
+      setOpen(false);
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || err?.message || "Error al guardar.";
+      alert(msg);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
-    <div style={{ display: "grid", gap: "1rem" }}>
-      {/* Filtros */}
-      <div
-        className="card"
-        style={{ display: "grid", gap: ".7rem", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr" }}
-      >
-        <input
-          className="input"
-          placeholder="Buscar por nombre, categoría…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <select
-          className="select"
-          value={cat}
-          onChange={(e) => setCat(Number(e.target.value))}
-          onFocus={seedCategoriasUI}
-        >
-          <option value={0}>Todas las categorías</option>
-          {categorias.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.nombre}
-            </option>
-          ))}
-        </select>
-        <input
-          className="input"
-          type="date"
-          value={rango.desde}
-          onChange={(e) => setRango((r) => ({ ...r, desde: e.target.value }))}
-        />
-        <input
-          className="input"
-          type="date"
-          value={rango.hasta}
-          onChange={(e) => setRango((r) => ({ ...r, hasta: e.target.value }))}
-        />
-        <div style={{ display: "flex", gap: ".5rem" }}>
-          <button className="secondary" onClick={limpiar} style={{ width: "100%" }}>
-            Limpiar
-          </button>
-          <button onClick={onNew} style={{ width: "100%" }}>
-            + Nuevo Gasto
-          </button>
-        </div>
-      </div>
+    <>
+      <CatalogScaffold
+        titulo="Catálogo: Gastos"
+        placeholderBusqueda="Buscar gasto..."
+        rows={rows}
+        totalCount={count}
+        page={page}
+        pageSize={pageSize}
+        loading={loading}
+        onSearch={(text) => { setQ(text); load(1, text); }}
+        onClear={() => { setQ(""); load(1, ""); }}
+        onPageChange={(next) => { if (next < 1 || next > totalPages) return; load(next, q); }}
+        onNewClick={onNewClick}
+        onEditClick={onEditClick}
+        onDeleteClick={onDeleteClick}
+        extraColumns={[
+          { header: "Monto", alignRight: true, render: (r) => (r as RowExt).monto.toFixed(2) },
+          { header: "Fecha", render: (r) => (r as RowExt).fecha || "—" },
+          { header: "Categoría", render: (r) => (r as RowExt).categoria },
+        ]}
+        exportPdf={{
+          filename: "gastos.pdf",
+          headers: ["ID", "Nombre", "Monto", "Fecha", "Categoría"],
+          mapRow: (r) => {
+            const rr = r as RowExt;
+            return [rr.id, rr.nombre, rr.monto.toFixed(2), rr.fecha || "", rr.categoria];
+          },
+          footerNote: "Exportado desde Multilazos • Catálogo de gastos",
+          confirm: true,
+          confirmMessage: "¿Desea exportar el PDF de Gastos (página visible)?",
+        }}
+      />
 
-      {/* Resumen */}
-      <div className="card" style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
-        <div style={{ fontWeight: 600 }}>Gastos visibles:</div>
-        <div>
-          <span>Total:</span>{" "}
-          <span style={{ fontWeight: 700 }}>Q {totalVisible.toFixed(2)}</span>
-        </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: ".5rem" }}>
-          <button className="secondary">Exportar CSV (UI)</button>
-          <button className="secondary">Imprimir (UI)</button>
-        </div>
-      </div>
-
-      {/* Tabla */}
-      <div className="card">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Nombre</th>
-              <th>Categoría</th>
-              <th style={{ textAlign: "right" }}>Monto (Q)</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {pageData.map((g) => (
-              <tr key={g.id}>
-                <td>{g.fecha}</td>
-                <td>{g.nombre}</td>
-                <td>{g.categoria}</td>
-                <td style={{ textAlign: "right" }}>Q {g.monto.toFixed(2)}</td>
-                <td style={{ display: "flex", gap: ".4rem" }}>
-                  <button className="secondary" onClick={() => onEdit(g.id)}>
-                    Editar
-                  </button>
-                  <button className="warn" onClick={() => onDelete(g.id)}>
-                    Eliminar
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {pageData.length === 0 && (
-              <tr>
-                <td colSpan={5}>
-                  <EmptyState
-                    title="Aún no hay gastos"
-                    subtitle="Registra tu primer gasto para verlo aquí. Al conectar el backend, se listarán desde SQL Server."
-                    actionLabel="+ Nuevo Gasto"
-                    onAction={onNew}
-                  />
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-
-        {/* Paginación */}
-        <div style={{ display: "flex", gap: ".5rem", justifyContent: "flex-end", marginTop: ".8rem" }}>
-          <button className="secondary" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-            Anterior
-          </button>
-          <div style={{ alignSelf: "center" }}>Página {page} / {totalPages}</div>
-          <button className="secondary" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>
-            Siguiente
-          </button>
-        </div>
-      </div>
-
-      {/* Modal CRUD */}
+      {/* Modal NUEVO/EDITAR */}
       {open && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,.25)",
-            display: "grid",
-            placeItems: "center",
-            zIndex: 50,
-          }}
-        >
-          <form className="card" onSubmit={onSave} style={{ minWidth: 360, width: "min(560px,95vw)" }}>
-            <h3 style={{ marginTop: 0 }}>{editId == null ? "Nuevo Gasto" : "Editar Gasto"}</h3>
-            <div style={{ display: "grid", gap: ".6rem", gridTemplateColumns: "1fr 1fr" }}>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label>Nombre*</label>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.25)", display: "grid", placeItems: "center", zIndex: 50 }}>
+          <form className="card" onSubmit={onSave} style={{ minWidth: 560, width: "min(860px, 95vw)" }}>
+            <h3 style={{ marginTop: 0 }}>{editId == null ? "Nuevo gasto" : "Editar gasto"}</h3>
+
+            <div style={{ display: "grid", gap: ".8rem", gridTemplateColumns: "2fr 1fr 1fr 1fr" }}>
+              <div style={{ gridColumn: "1 / span 2" }}>
+                <label>Nombre</label>
                 <input
                   className="input"
                   value={form.nombre}
-                  onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+                  onChange={e => setForm(f => ({ ...f, nombre: e.target.value }))}
                 />
-                {errors.nombre && <div style={{ color: "crimson", fontSize: ".85rem" }}>{errors.nombre}</div>}
               </div>
+
               <div>
-                <label>Monto (Q)*</label>
+                <label>Monto</label>
                 <input
                   className="input"
                   type="number"
-                  min={0}
-                  step={0.01}
+                  step="0.01"
+                  min="0"
                   value={form.monto}
-                  onChange={(e) => setForm({ ...form, monto: Number(e.target.value) })}
+                  onChange={e => setForm(f => ({ ...f, monto: e.target.value }))}
                 />
-                {errors.monto && <div style={{ color: "crimson", fontSize: ".85rem" }}>{errors.monto}</div>}
               </div>
+
               <div>
-                <label>Fecha*</label>
+                <label>Fecha</label>
                 <input
                   className="input"
                   type="date"
                   value={form.fecha}
-                  onChange={(e) => setForm({ ...form, fecha: e.target.value })}
+                  onChange={e => setForm(f => ({ ...f, fecha: e.target.value }))}
                 />
-                {errors.fecha && <div style={{ color: "crimson", fontSize: ".85rem" }}>{errors.fecha}</div>}
               </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label>Categoría*</label>
+
+              <div style={{ gridColumn: "1 / span 2" }}>
+                <label>Categoría de gasto</label>
                 <select
-                  className="select"
-                  value={form.idCategoria}
-                  onChange={(e) => setForm({ ...form, idCategoria: Number(e.target.value) })}
-                  onFocus={seedCategoriasUI}
+                  className="input"
+                  value={form.id_categoria_gastos}
+                  onChange={e => setForm(f => ({ ...f, id_categoria_gastos: e.target.value }))}
                 >
-                  <option value={0}>Seleccione…</option>
-                  {categorias.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.nombre}
+                  <option value="">Seleccione…</option>
+                  {categorias.map(c => (
+                    <option key={c.id_categoria_gastos ?? c.id_categoria_gastos} value={c.id_categoria_gastos ?? c.id_categoria_gastos}>
+                      {c.nombre_categoria}
                     </option>
                   ))}
                 </select>
-                {errors.idCategoria && (
-                  <div style={{ color: "crimson", fontSize: ".85rem" }}>{errors.idCategoria}</div>
-                )}
               </div>
             </div>
+
             <div style={{ display: "flex", gap: ".6rem", justifyContent: "flex-end", marginTop: "1rem" }}>
-              <button type="button" className="secondary" onClick={() => setOpen(false)}>
-                Cancelar
-              </button>
-              <button type="submit">Guardar</button>
+              <button type="button" className="secondary" onClick={() => setOpen(false)} disabled={saving}>Cancelar</button>
+              <button type="submit" disabled={saving}>{saving ? "Guardando..." : "Guardar"}</button>
             </div>
           </form>
         </div>
       )}
-    </div>
+    </>
   );
 }
