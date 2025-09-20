@@ -1,279 +1,519 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import Chart from "chart.js/auto";                 // ✅ registra controllers/elementos/escalas automáticamente
-import EmptyState from "../components/EmptyState";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
+import Chart from "chart.js/auto";
+import ChartDataLabels from "chartjs-plugin-datalabels";
+import CatalogScaffold, { Row } from "./catalogos/_CatalogScaffold";
+import { listVentas, createVenta, updateVenta, deleteVenta, ventasTotalesPorMes } from "../services/ventas";
+import { getCliente } from "../services/clientes";
+import { getTipoCliente } from "../services/tipoClientes";
+import { listClientes } from "../services/clientes";
+import { fetchTipoTransacciones } from "../services/tipoTransacciones";
+import { getIdFechaByDate } from "../services/dimFecha";
+import { listDetalleVentas } from "../services/detalleVentas";
+import type { Venta } from "../types/ventas";
+import type { Cliente } from "../types/clientes";
+import type { TipoTransaccion } from "../types/tipoTransacciones";
+import jsPDF from "jspdf";
 
-// -------------------- Tipos y validación --------------------
-type TVenta = {
-  id: number;
-  fecha: string;               // ISO yyyy-mm-dd (UI)
+Chart.register(ChartDataLabels);
+
+
+type RowExt = Row & {
   cliente: string;
-  tipoTransaccion: "Contado" | "Crédito";
-  producto: string;
-  cantidad: number;
-  precioUnitario: number;
+  tipo: string;
+  fecha: string;
+  plazo: number;
+  interes: number;
+  total: number;
+  idFechaNum: number;
 };
 
-function validar(v: Omit<TVenta,"id">){
-  const errs: Record<string,string> = {};
-  if(!v.fecha) errs.fecha = "Fecha obligatoria.";
-  if(!v.cliente.trim()) errs.cliente = "Cliente obligatorio.";
-  if(!v.producto.trim()) errs.producto = "Producto obligatorio.";
-  if(v.cantidad<=0) errs.cantidad = "Cantidad > 0.";
-  if(v.precioUnitario<0) errs.precioUnitario = "Precio >= 0.";
-  return errs;
+const PLAZOS_VALIDOS = [3,6,9,12,24,36,48];
+
+
+function todayISO() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,"0");
+  const dd = String(d.getDate()).padStart(2,"0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
-// -------------------- Página --------------------
-export default function Ventas(){
-  // 🔸 Arrancamos SIN DATOS (UI habilitada)
-  const [data, setData] = useState<TVenta[]>([]);
-  const [q, setQ] = useState("");
-  const [tipo, setTipo] = useState<"Todos"|"Contado"|"Crédito">("Todos");
-  const [desde, setDesde] = useState("");
-  const [hasta, setHasta] = useState("");
+export default function Ventas() {
 
-  // Modal CRUD (habilitado)
-  const [open, setOpen] = useState(false);
-  const [editId, setEditId] = useState<number|null>(null);
-  const [form, setForm] = useState<Omit<TVenta,"id">>({
-    fecha:"", cliente:"", tipoTransaccion:"Contado", producto:"", cantidad:1, precioUnitario:0
-  });
-  const [errors, setErrors] = useState<Record<string,string>>({});
-
-  // Filtro (aunque esté vacío, dejamos la lógica)
-  const filtered = useMemo(()=>{
-    return data.filter(v=>{
-      const okTexto = [v.cliente,v.producto,v.tipoTransaccion].join(" ").toLowerCase().includes(q.toLowerCase());
-      const okTipo = (tipo==="Todos") || v.tipoTransaccion===tipo;
-      const okDesde = !desde || v.fecha >= desde;
-      const okHasta = !hasta || v.fecha <= hasta;
-      return okTexto && okTipo && okDesde && okHasta;
-    });
-  },[data,q,tipo,desde,hasta]);
-
-  // -------------------- Chart --------------------
+  const navigate = useNavigate();
+  // gráfico
   const canvasRef = useRef<HTMLCanvasElement|null>(null);
   const chartRef = useRef<Chart|null>(null);
 
+  // grid
+  const [rows, setRows] = useState<RowExt[]>([]);
+  const [count, setCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  // combos
+  const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [tipos, setTipos] = useState<TipoTransaccion[]>([]);
+
+  // modal
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editId, setEditId] = useState<number|null>(null);
+  const [form, setForm] = useState<{
+    id_cliente: string;
+    id_tipo_transaccion: string;
+    fecha: string;
+    plazo_mes: string;   // deshabilitado en contado
+    interes: string;     // autollenado en crédito, 0 en contado (solo lectura)
+  }>({ id_cliente:"", id_tipo_transaccion:"", fecha: todayISO(), plazo_mes:"0", interes:"0" });
+
+  const totalPages = useMemo(()=>Math.max(1, Math.ceil(count/pageSize)),[count]);
+
   useEffect(()=>{
-    // preparar datos
-    const porMes = new Map<string, number>();
-    filtered.forEach(v=>{
-      const ym = v.fecha.slice(0,7); // yyyy-mm
-      porMes.set(ym, (porMes.get(ym)||0) + v.cantidad*v.precioUnitario);
-    });
-    const labels = Array.from(porMes.keys()).sort();
-    const valores = labels.map(l=>porMes.get(l) || 0);
+    (async()=>{
+      const [cli, tps] = await Promise.all([
+        listClientes({ page:1, page_size:1000 }),
+        fetchTipoTransacciones({ page:1, page_size:1000 }),
+      ]);
+      setClientes(cli.results);
+      setTipos(tps.results);
+    })();
+    loadData(1, q);
+  },[]); // eslint-disable-line
 
-    if(!canvasRef.current) return;
-
-    // ✅ destruir cualquier instancia previa ANTES de crear una nueva
-    if(chartRef.current){
-      chartRef.current.destroy();
-      chartRef.current = null;
+  // Carga combos y data
+  async function loadData(p=page, query=q) {
+    setLoading(true);
+    try {
+      const res = await listVentas({ page:p, page_size:pageSize, search:query || undefined });
+      const mapped: RowExt[] = res.results.map((v: Venta) => ({
+        id: v.id_venta,
+        nombre: `#${v.id_venta}`, // columna principal del scaffold
+        cliente: v.cliente,
+        tipo: v.tipo_transaccion,
+        fecha: v.fecha || "",
+        plazo: v.plazo_mes,
+        interes: Number(v.interes),
+        total: Number(v.total_venta_final),
+        idFechaNum: v.id_fecha
+      }));
+      setRows(mapped);
+      setCount(res.count);
+      setPage(p);
+    } finally {
+      setLoading(false);
     }
+  }
 
-    chartRef.current = new Chart(canvasRef.current, {
-      type:"bar",
-      data:{
-        labels,
-        datasets:[{ label:"Ventas (Q)", data: valores, backgroundColor:"#2a6ac3", borderRadius:8 }]
+// === Gráfica: fetch + render ===
+const fetchAndRenderChart = useCallback(async () => {
+  const data = await ventasTotalesPorMes(); // [{ mes:"YYYY-MM", total:"123.45" }, ...]
+  const labels = data.map(d => d.mes);
+  const valores = data.map(d => parseFloat(String(d.total ?? "0")) || 0);
+
+  if (!canvasRef.current) return;
+
+  // si ya existe, actualizamos datos y listo
+  if (chartRef.current) {
+    chartRef.current.data.labels = labels;
+    chartRef.current.data.datasets[0].data = valores;
+    chartRef.current.update();
+    return;
+  }
+
+  // crear nueva instancia: LINEA + datalabels
+  chartRef.current = new Chart(canvasRef.current, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Ventas (Q)",
+          data: valores,
+          tension: 0.3,     // curva suave
+          pointRadius: 3,   // puntos visibles
+        },
+      ],
+    },
+    options: {
+      plugins: {
+        legend: { position: "bottom" },
+        datalabels: {
+          anchor: "end",
+          align: "top",
+          formatter: (v: number) => `Q ${v.toFixed(2)}`,
+          clamp: true,
+          clip: false,
+        },
       },
-      options:{
-        plugins:{ legend:{position:"bottom"} },
-        scales:{ x:{ grid:{display:false}}, y:{ grid:{color:"#e9edf5"}} }
-      }
-    });
+      scales: {
+        x: { grid: { display: false } },
+        y: { grid: { color: "#e9edf5" } },
+      },
+    },
+  });
+}, []);
 
-    // cleanup al desmontar o recalcular
-    return ()=>{
+function handleExportGraficaPdf() {
+  if (!canvasRef.current) return;
+
+  // confirmación estilo catálogos
+  const ok = confirm("¿Desea exportar la gráfica 'Ventas por mes' en PDF?");
+  if (!ok) return;
+
+  // obtener imagen del canvas
+  const canvas = canvasRef.current;
+  const imgData = canvas.toDataURL("image/png", 1.0);
+
+  // PDF apaisado para aprovechar ancho
+  const pdf = new jsPDF("landscape", "pt", "a4");
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+
+  // márgenes
+  const marginX = 36; // 0.5in
+  const marginY = 36;
+
+  // título
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(16);
+  pdf.text("Ventas por mes", marginX, marginY);
+
+  // fecha de export
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(10);
+  const fecha = new Date();
+  const fechaStr = fecha.toLocaleString();
+  pdf.text(`Exportado: ${fechaStr}`, pageWidth - marginX, marginY, { align: "right" });
+
+  // espacio disponible para la imagen
+  const availableW = pageWidth - marginX * 2;
+  const availableH = pageHeight - marginY * 2 - 20; // 20px debajo del título
+
+  // Mantener proporción de la imagen del canvas
+  const img = new Image();
+  img.src = imgData;
+
+  // Truco: como toDataURL ya devuelve tamaño final del canvas,
+  // escalamos en base a su relación de aspecto.
+  const canvasW = canvas.width;
+  const canvasH = canvas.height;
+  const aspect = canvasW / canvasH;
+
+  let drawW = availableW;
+  let drawH = drawW / aspect;
+  if (drawH > availableH) {
+    drawH = availableH;
+    drawW = drawH * aspect;
+  }
+
+  const startX = marginX + (availableW - drawW) / 2;
+  const startY = marginY + 20 + (availableH - drawH) / 2;
+
+  pdf.addImage(imgData, "PNG", startX, startY, drawW, drawH, undefined, "FAST");
+
+  pdf.save("ventas-por-mes.pdf");
+}
+
+  
+
+  // ====== GRÁFICA
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      if (!mounted) return;
+      await fetchAndRenderChart();
+    })();
+
+    return () => {
+      mounted = false;
       chartRef.current?.destroy();
       chartRef.current = null;
     };
-  }, [filtered]);
+  }, [fetchAndRenderChart]);
 
-  // -------------------- Acciones CRUD --------------------
-  function onNew(){
+  // ====== CRUD Ventas
+
+  function onNewClick(){
     setEditId(null);
-    setForm({fecha:"",cliente:"",tipoTransaccion:"Contado",producto:"",cantidad:1,precioUnitario:0});
-    setErrors({});
+    setForm({ id_cliente:"", id_tipo_transaccion:"", fecha: todayISO(), plazo_mes:"0", interes:"0" });
     setOpen(true);
   }
-  function onEdit(id:number){
-    const v = data.find(x=>x.id===id);
+
+  async function onEditClick(row: Row){
+    const v = rows.find(r=>r.id===row.id);
     if(!v) return;
-    const {id:_, ...rest} = v;
-    setEditId(id);
-    setForm(rest);
-    setErrors({});
+    setEditId(v.id);
+    // si crédito mantener plazo; si contado 0
+    const tp = tipos.find(t=>t.id_tipo_transaccion===Number(v.tipo.includes("rédito")?2:1));
+    setForm({
+      id_cliente: String(v ? clientes.find(c=>`${c.nombre_cliente} ${c.apellido_cliente}`===v.cliente)?.id_cliente ?? "":"") ,
+      id_tipo_transaccion: String(tp?.id_tipo_transaccion ?? ""),
+      fecha: v.fecha || todayISO(),
+      plazo_mes: String(v.plazo || 0),
+      interes: String(v.interes ?? 0)
+    });
     setOpen(true);
   }
-  function onDelete(id:number){
-    if(confirm("¿Eliminar la venta seleccionada? (UI)")){
-      setData(d => d.filter(x=>x.id!==id));
+
+  async function onDeleteClick(row: Row){
+    const ok = confirm(`¿Eliminar la venta ${row.id}?`);
+    if(!ok) return;
+    try{
+      setLoading(true);
+      await deleteVenta(row.id);
+      const next = rows.length===1 && page>1 ? page-1 : page;
+      await loadData(next, q);
+      await fetchAndRenderChart();
+    } finally {
+      setLoading(false);
     }
   }
-  function onSave(e:React.FormEvent){
+
+  // al cambiar tipo: si contado -> plazo=0 e interes=0; si crédito -> habilitar plazos y calcular interés por cliente
+  async function onTipoChange(idTipoStr: string){
+    const idTipo = Number(idTipoStr||0);
+    if(idTipo===1){
+      // contado
+      setForm(f=>({ ...f, id_tipo_transaccion:idTipoStr, plazo_mes:"0", interes:"0" }));
+      return;
+    }
+  // crédito: intentar traer tasa por cliente
+    const idCli = Number(form.id_cliente);
+    let interesStr = form.interes || "0";
+    if(idCli){
+      try{
+        const cli = await getCliente(idCli);
+        // soportar estructura { tasa_interes_default } o anidada en tipo
+        const bruto = (cli.tasa_interes_default ?? cli?.tipo_cliente?.tasa_interes_default ?? 0) as number;
+        const normal = bruto <= 1 ? bruto * 100 : bruto; // 0.05 -> 5
+        interesStr = String(Number(normal).toFixed(2));
+      }catch{}
+    }
+    setForm(f=>({ ...f, id_tipo_transaccion:idTipoStr, interes: interesStr, plazo_mes: f.plazo_mes==="0" ? "3" : f.plazo_mes }));
+  }
+
+  async function fetchInteresForCliente(id_cliente: number): Promise<string> {
+  try {
+    const cli = await getCliente(id_cliente);
+    // intenta varias formas de encontrar la tasa
+    let bruto = cli?.tasa_interes_default 
+             ?? cli?.tipo_cliente?.tasa_interes_default 
+             ?? undefined;
+
+    if (bruto === undefined) {
+      const idTipo = cli?.id_tipo_cliente ?? cli?.tipo_cliente?.id_tipo_cliente;
+      if (idTipo) {
+        const tipo = await getTipoCliente(Number(idTipo));
+        bruto = tipo?.tasa_interes_default ?? 0;
+      } else {
+        bruto = 0;
+      }
+    }
+
+    const n = Number(bruto || 0);
+    const normalizado = n <= 1 ? n * 100 : n; // 0.05 -> 5
+    return String(Number(normalizado).toFixed(2));
+  } catch {
+    return "0";
+  }
+}
+
+
+  useEffect(()=>{
+    (async ()=>{
+      if (Number(form.id_tipo_transaccion) === 2 && form.id_cliente) {
+        try {
+          const cli = await getCliente(Number(form.id_cliente));
+          const bruto = (cli.tasa_interes_default ?? cli?.tipo_cliente?.tasa_interes_default ?? 0) as number;
+          const normal = bruto <= 1 ? bruto * 100 : bruto; // 0.05 -> 5
+          setForm(f => ({ ...f, interes: String(Number(normal).toFixed(2)) }));
+        } catch {
+          // opcional: manejar error silencioso
+        }
+      } else if (Number(form.id_tipo_transaccion) === 1) {
+        // contado: interés 0 y plazo 0
+        setForm(f => ({ ...f, interes: "0", plazo_mes: "0" }));
+      }
+    })();
+    // importante: NO agregar 'form.interes' a deps para evitar loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.id_cliente, form.id_tipo_transaccion]);
+
+
+  async function onSave(e: React.FormEvent){
     e.preventDefault();
-    const errs = validar(form);
-    setErrors(errs);
-    if(Object.keys(errs).length) return;
+    if(!confirm("¿Desea guardar los cambios?")) return;
 
-    if(editId==null){
-      const nextId = (Math.max(0,...data.map(x=>x.id)) + 1);
-      setData(d => [...d, {id:nextId, ...form}]);
-    }else{
-      setData(d => d.map(x => x.id===editId ? ({id:editId, ...form}) : x));
+    const id_cliente = Number(form.id_cliente);
+    const id_tipo_transaccion = Number(form.id_tipo_transaccion);
+    if(!id_cliente){ alert("Seleccione cliente."); return; }
+    if(!id_tipo_transaccion){ alert("Seleccione tipo de transacción."); return; }
+    try{
+      setSaving(true);
+      const { id_fecha } = await getIdFechaByDate(form.fecha);
+      if(editId==null){
+        const body: any = { id_cliente, id_tipo_transaccion, id_fecha };
+        if(id_tipo_transaccion===2){ body.plazo_mes = Number(form.plazo_mes || 0); }
+        await createVenta(body);
+        await loadData(1, q);
+        await fetchAndRenderChart(); // actualizar gráfica tras crear
+      }else{
+        const body: any = { id_cliente, id_tipo_transaccion, id_fecha };
+        if(id_tipo_transaccion===2){ body.plazo_mes = Number(form.plazo_mes || 0); }
+        await updateVenta(editId, body);
+        await loadData(page, q);
+        await fetchAndRenderChart();
+      }
+      setOpen(false);
+    }catch(err:any){
+      alert(err?.response?.data?.detail || err?.message || "Error al guardar.");
+    }finally{
+      setSaving(false);
     }
-    setOpen(false);
   }
 
-  // -------------------- Paginación --------------------
-  const [page, setPage] = useState(1);
-  const pageSize = 6;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageData = useMemo(()=>{
-    const start = (page-1)*pageSize;
-    return filtered.slice(start, start+pageSize);
-  },[filtered,page]);
-
-  useEffect(()=>{ setPage(1); },[q,tipo,desde,hasta]);
-
-  // -------------------- Render --------------------
   return (
-    <div style={{display:"grid", gap:"1rem"}}>
-      {/* Filtros habilitados */}
-      <div className="card" style={{display:"grid",gap:".7rem",gridTemplateColumns:"repeat(6,1fr)"}}>
-        <input className="input" placeholder="Buscar…" value={q} onChange={e=>setQ(e.target.value)} />
-        <select className="select" value={tipo} onChange={e=>setTipo(e.target.value as any)}>
-          <option>Todos</option><option>Contado</option><option>Crédito</option>
-        </select>
-        <input className="input" type="date" value={desde} onChange={e=>setDesde(e.target.value)}/>
-        <input className="input" type="date" value={hasta} onChange={e=>setHasta(e.target.value)}/>
-        <button className="secondary" onClick={()=>{setQ("");setTipo("Todos");setDesde("");setHasta("");}}>Limpiar</button>
-        <button onClick={onNew}>+ Nueva Venta</button>
-      </div>
-
-      {/* Gráfica (vacía si no hay datos) */}
-      <div className="card">
-        <div style={{fontWeight:800, marginBottom:".5rem"}}>Ventas por mes</div>
-        <canvas ref={canvasRef} height={110}/>
-        {filtered.length===0 && (
-          <div style={{marginTop:".8rem"}}>
-            <EmptyState
-              title="Sin datos para graficar"
-              subtitle="Cree registros o conecte el backend para visualizar la tendencia."
-              actionLabel="+ Nueva Venta"
-              onAction={onNew}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Tabla (encabezados + estado vacío) */}
-      <div className="card">
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".6rem"}}>
-          <h3 style={{margin:0}}>Listado de Ventas</h3>
-          <div style={{display:"flex",gap:".5rem"}}>
-            <button className="secondary">Exportar CSV (UI)</button>
-            <button className="secondary">Imprimir (UI)</button>
+    <>
+      {/* ====== GRÁFICA ====== */}
+      <div className="card" style={{ marginBottom: ".8rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: ".6rem" }}>
+          <div style={{ fontWeight: 800 }}>Ventas por mes</div>
+          <div style={{ marginLeft: "auto", display: "flex", gap: ".5rem" }}>
+            <button className="secondary" onClick={handleExportGraficaPdf}>
+              Exportar PDF
+            </button>
           </div>
         </div>
-
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Fecha</th><th>Cliente</th><th>Tipo</th><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Total</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {pageData.map(v=>(
-              <tr key={v.id}>
-                <td>{v.fecha}</td>
-                <td>{v.cliente}</td>
-                <td><span className="badge">{v.tipoTransaccion}</span></td>
-                <td>{v.producto}</td>
-                <td>{v.cantidad}</td>
-                <td>Q {v.precioUnitario.toFixed(2)}</td>
-                <td>Q {(v.cantidad*v.precioUnitario).toFixed(2)}</td>
-                <td style={{display:"flex",gap:".4rem"}}>
-                  <button className="secondary" onClick={()=>onEdit(v.id)}>Editar</button>
-                  <button className="warn" onClick={()=>onDelete(v.id)}>Eliminar</button>
-                </td>
-              </tr>
-            ))}
-            {pageData.length===0 && (
-              <tr>
-                <td colSpan={8}>
-                  <EmptyState
-                    title="Aún no hay ventas"
-                    subtitle="Usa el botón 'Nueva Venta' para registrar la primera. Luego, al conectar el backend, esta tabla mostrará la información real."
-                    actionLabel="+ Nueva Venta"
-                    onAction={onNew}
-                  />
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-
-        {/* Paginación (visible aunque esté vacío, para evidencia UI) */}
-        <div style={{display:"flex",gap:".5rem",justifyContent:"flex-end",marginTop:".8rem"}}>
-          <button className="secondary" disabled={page<=1} onClick={()=>setPage(p=>p-1)}>Anterior</button>
-          <div style={{alignSelf:"center"}}>Página {page} / {totalPages}</div>
-          <button className="secondary" disabled={page>=totalPages} onClick={()=>setPage(p=>p+1)}>Siguiente</button>
-        </div>
+        <canvas ref={canvasRef} height={80} />
       </div>
 
-      {/* Modal CRUD (campos habilitados + validaciones) */}
+      {/* ====== LISTADO ====== */}
+      <CatalogScaffold
+        titulo="Catálogo: Ventas"
+        placeholderBusqueda="Buscar por cliente..."
+        rows={rows}
+        totalCount={count}
+        page={page}
+        pageSize={pageSize}
+        loading={loading}
+        onSearch={(text)=>{ setQ(text); loadData(1, text); }}
+        onClear={()=>{ setQ(""); loadData(1, ""); }}
+        onPageChange={(next)=>{ if(next<1||next>totalPages) return; loadData(next, q); }}
+        onNewClick={onNewClick}
+        onEditClick={onEditClick}
+        onDeleteClick={onDeleteClick}
+        extraColumns={[
+          { header: "Cliente", render: (r)=> (r as RowExt).cliente },
+          { header: "Tipo", render: (r)=> (r as RowExt).tipo },
+          { header: "Fecha", render: (r)=> (r as RowExt).fecha || "—" },
+          { header: "Plazo", alignRight:true, render: (r)=> (r as RowExt).plazo },
+          { header: "Interés (%)", alignRight:true, render: (r)=> (r as RowExt).interes.toFixed(2) },
+          { header: "Total (Q)", alignRight:true, render: (r)=> (r as RowExt).total.toFixed(2) },
+          { header: "",render: (r) => (<button className="secondary" onClick={()=> navigate(`/ventas/${(r as RowExt).id}/detalle`)}>Detalle</button>)}
+        ]}
+        exportPdf={{
+          filename: "ventas.pdf",
+          headers: ["ID", "Cliente", "Tipo", "Fecha", "Plazo", "Interés (%)", "Total (Q)"],
+          mapRow: (r)=>{
+            const v = r as RowExt;
+            return [v.id, v.cliente, v.tipo, v.fecha || "", v.plazo, v.interes.toFixed(2), v.total.toFixed(2)];
+          },
+          footerNote: "Exportado desde Multilazos • Ventas",
+          confirm: true,
+          confirmMessage: "¿Desea exportar el PDF de Ventas (página visible)?",
+        }}
+      />
+
+      {/* ====== MODAL NUEVO/EDITAR ====== */}
       {open && (
-        <div style={{
-          position:"fixed", inset:0, background:"rgba(0,0,0,.25)", display:"grid", placeItems:"center", zIndex:50
-        }}>
-          <form className="card" onSubmit={onSave} style={{minWidth:360, width:"min(560px, 92vw)"}}>
-            <h3 style={{marginTop:0}}>{editId==null? "Nueva Venta":"Editar Venta"}</h3>
-            <div style={{display:"grid",gap:".6rem",gridTemplateColumns:"1fr 1fr"}}>
-              <div>
-                <label>Fecha</label>
-                <input className="input" type="date" value={form.fecha} onChange={e=>setForm({...form,fecha:e.target.value})}/>
-                {errors.fecha && <div style={{color:"crimson",fontSize:".85rem"}}>{errors.fecha}</div>}
-              </div>
-              <div>
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.25)", display:"grid", placeItems:"center", zIndex:50 }}>
+          <form className="card" onSubmit={onSave} style={{ minWidth: 560, width:"min(860px,95vw)" }}>
+            <h3 style={{ marginTop:0 }}>{editId==null ? "Nueva venta" : "Editar venta"}</h3>
+
+            <div style={{ display:"grid", gap:".8rem", gridTemplateColumns:"2fr 1fr 1fr 1fr" }}>
+              <div style={{ gridColumn:"1 / span 2" }}>
                 <label>Cliente</label>
-                <input className="input" value={form.cliente} onChange={e=>setForm({...form,cliente:e.target.value})}/>
-                {errors.cliente && <div style={{color:"crimson",fontSize:".85rem"}}>{errors.cliente}</div>}
-              </div>
-              <div>
-                <label>Tipo de transacción</label>
-                <select className="select" value={form.tipoTransaccion} onChange={e=>setForm({...form,tipoTransaccion:e.target.value as any})}>
-                  <option>Contado</option><option>Crédito</option>
+                <select
+                  className="input"
+                  value={form.id_cliente}
+                  onChange={e=>setForm(f=>({ ...f, id_cliente: e.target.value }))}
+                >
+                  <option value="">Seleccione…</option>
+                  {clientes.map(c=>(
+                    <option key={c.id_cliente} value={c.id_cliente}>
+                      {c.nombre_cliente} {c.apellido_cliente}
+                    </option>
+                  ))}
                 </select>
               </div>
+
               <div>
-                <label>Producto</label>
-                <input className="input" value={form.producto} onChange={e=>setForm({...form,producto:e.target.value})}/>
-                {errors.producto && <div style={{color:"crimson",fontSize:".85rem"}}>{errors.producto}</div>}
+                <label>Tipo</label>
+                <select
+                  className="input"
+                  value={form.id_tipo_transaccion}
+                  onChange={e=>onTipoChange(e.target.value)}
+                >
+                  <option value="">Seleccione…</option>
+                  {tipos.map(t=>(
+                    <option key={t.id_tipo_transaccion} value={t.id_tipo_transaccion}>
+                      {t.nombre_tipo_transaccion}
+                    </option>
+                  ))}
+                </select>
               </div>
+
               <div>
-                <label>Cantidad</label>
-                <input className="input" type="number" min={0} step={1} value={form.cantidad}
-                  onChange={e=>setForm({...form,cantidad:Number(e.target.value)})}/>
-                {errors.cantidad && <div style={{color:"crimson",fontSize:".85rem"}}>{errors.cantidad}</div>}
+                <label>Fecha</label>
+                <input
+                  className="input"
+                  type="date"
+                  value={form.fecha}
+                  onChange={e=>setForm(f=>({ ...f, fecha: e.target.value }))}
+                />
               </div>
+
               <div>
-                <label>Precio unitario (Q)</label>
-                <input className="input" type="number" min={0} step={0.01} value={form.precioUnitario}
-                  onChange={e=>setForm({...form,precioUnitario:Number(e.target.value)})}/>
-                {errors.precioUnitario && <div style={{color:"crimson",fontSize:".85rem"}}>{errors.precioUnitario}</div>}
+                <label>Plazo (meses)</label>
+                <select
+                  className="input"
+                  value={form.plazo_mes}
+                  onChange={e=>setForm(f=>({ ...f, plazo_mes: e.target.value }))}
+                  disabled={Number(form.id_tipo_transaccion)!==2}
+                >
+                  {Number(form.id_tipo_transaccion)===2 ? (
+                    <>
+                      {PLAZOS_VALIDOS.map(p=><option key={p} value={p}>{p}</option>)}
+                    </>
+                  ) : (
+                    <option value="0">0</option>
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label>Interés (%)</label>
+                <input className="input" value={form.interes} readOnly />
               </div>
             </div>
-            <div style={{display:"flex",gap:".6rem",justifyContent:"flex-end",marginTop:"1rem"}}>
-              <button type="button" className="secondary" onClick={()=>setOpen(false)}>Cancelar</button>
-              <button type="submit">Guardar</button>
+
+            <div style={{ display:"flex", gap:".6rem", justifyContent:"flex-end", marginTop:"1rem" }}>
+              <button type="button" className="secondary" onClick={()=>setOpen(false)} disabled={saving}>Cancelar</button>
+              <button type="submit" disabled={saving}>{saving ? "Guardando..." : "Guardar"}</button>
+            </div>
+
+            {/* Nota: el detalle se gestiona en su propia página */}
+            <div style={{marginTop:".6rem", fontSize:12, opacity:.7}}>
+              * El total se recalcula automáticamente con detalle venta
             </div>
           </form>
         </div>
       )}
-    </div>
+    </>
   );
 }

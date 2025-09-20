@@ -1,18 +1,9 @@
 import http from '../api/http';
 import type { Producto, PagedResponse } from "../types/productos";
 
-export async function listProductos(params: {
-  page?: number; page_size?: number; search?: string; id_categoria?: number;
-}) {
-  const res = await http.get<PagedResponse<Producto>>("/productos/", {
-    params: {
-      page: params.page,
-      page_size: params.page_size,
-      search: params.search,
-      id_categoria: params.id_categoria,
-    },
-  });
-  return res.data;
+export async function listProductos(params?: { page?: number; page_size?: number; q?: string }) {
+  const res = await http.get("/productos/", { params });
+  return res.data; // ideal: {count, results:[{id_producto, nombre_producto, ...}]}
 }
 
 export async function createProducto(payload: {

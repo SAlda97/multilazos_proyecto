@@ -29,3 +29,8 @@ export async function deleteCliente(id: number) {
   const res = await http.delete<{ detail: string }>(`/clientes/${id}/`);
   return res.data;
 }
+
+export async function getCliente(id_cliente: number) {
+  const res = await http.get(`/clientes/${id_cliente}/`);
+  return res.data; // ideal: { …, id_tipo_cliente, tipo_cliente?: {tasa_interes_default} }
+}

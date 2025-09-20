@@ -19,7 +19,7 @@ const SECTIONS: Section[] = [
     title: "Operación",
     items: [
       { to: "/ventas", label: "Ventas" },
-      { to: "/ventas/detalle", label: "Ventas • Detalle" },
+
       { to: "/clientes", label: "Clientes" },
       { to: "/productos", label: "Productos" },
       { to: "/gastos", label: "Gastos" },

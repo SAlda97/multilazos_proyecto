@@ -26,3 +26,8 @@ export async function updateTipoCliente(
 export async function deleteTipoCliente(id: number) {
   await http.delete(`/tipo-clientes/${id}/`);
 }
+
+export async function getTipoCliente(id_tipo_cliente: number) {
+  const res = await http.get(`/tipo-clientes/${id_tipo_cliente}/`);
+  return res.data; // debe incluir tasa_interes_default
+}
