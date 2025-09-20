@@ -1,199 +1,177 @@
 import { useEffect, useMemo, useState } from "react";
-import { DetalleStore, Detalle, VentaRef } from "./ventas/_detalleStore";
+import CatalogScaffold, { Row } from "./catalogos/_CatalogScaffold";
+import { listDetalleVentas, createDetalleVenta, updateDetalleVenta, deleteDetalleVenta } from "../services/detalleVentas";
+import { listProductos } from "../services/productos";
+import type { DetalleVenta } from "../types/detalleVentas";
+import type { Producto } from "../types/productos";
+import { useNavigate, useParams } from "react-router-dom";
 
-type FormState = {
-  id_detalle_venta: number;
-  id_venta: number;
-  id_producto: number;
+type RowExt = Row & {
+  producto: string;
   cantidad: number;
   precio_unitario: number;
   costo_unitario_venta: number;
 };
 
-export default function DetalleVentas(){
-  const [db, setDb] = useState(DetalleStore.getAll());
+export default function DetalleVentas() {
+  const [rows, setRows] = useState<RowExt[]>([]);
+  const [count, setCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const [loading, setLoading] = useState(false);
+  const [subtotal, setSubtotal] = useState("0.00");
+  const [productos, setProductos] = useState<Producto[]>([]);
 
-  // venta seleccionada (para mostrar sus líneas)
-  const [ventaSel, setVentaSel] = useState<number>(db.ventas[0]?.id_venta ?? 0);
-
-  // buscador (por producto / id)
-  const [q, setQ] = useState("");
-
-  // CRUD modal
   const [open, setOpen] = useState(false);
-  const [edit, setEdit] = useState<FormState | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [editId, setEditId] = useState<number|null>(null);
+  const [form, setForm] = useState<{ id_producto: string; cantidad: string }>({ id_producto: "", cantidad: "" });
 
-  useEffect(()=>{ setDb(DetalleStore.getAll()); }, [open]);
+  const navigate = useNavigate();
+  const { id } = useParams();  
+  const idVenta = Number(id);
 
-  const ventaInfo: VentaRef | undefined = useMemo(
-    ()=> db.ventas.find(v=>v.id_venta===ventaSel),
-    [db, ventaSel]
-  );
+  const totalPages = useMemo(()=>Math.max(1, Math.ceil(count/pageSize)),[count]);
 
-  const rows = useMemo(()=>{
-    const r = db.detalles.filter(d=>d.id_venta===ventaSel);
-    if(!q) return r;
-    const texto = q.toLowerCase();
-    return r.filter(d=>{
-      const prod = db.productos.find(p=>p.id_producto===d.id_producto)?.nombre_producto ?? "";
-      return [d.id_detalle_venta, d.id_producto, prod].join(" ").toLowerCase().includes(texto);
-    });
-  }, [db, ventaSel, q]);
-
-  const totales = useMemo(()=>{
-    const total = rows.reduce((acc, d)=> acc + d.cantidad * d.precio_unitario, 0);
-    const totalCosto = rows.reduce((acc, d)=> acc + d.cantidad * d.costo_unitario_venta, 0);
-    const margen = total - totalCosto;
-    return { total, totalCosto, margen, lineas: rows.length };
-  }, [rows]);
-
-  function limpiar(){
-    setQ("");
-  }
-
-  // CRUD
-  function onNew(){
-    setEdit({
-      id_detalle_venta: 0,
-      id_venta: ventaSel,
-      id_producto: db.productos[0]?.id_producto ?? 0,
-      cantidad: 1,
-      precio_unitario: 0,
-      costo_unitario_venta: 0
-    });
-    setOpen(true);
-  }
-
-  function onEditRow(d: Detalle){
-    setEdit({...d});
-    setOpen(true);
-  }
-
-  function onDeleteRow(id:number){
-    if(confirm("¿Eliminar línea de venta? (UI)")){
-      DetalleStore.delete(id);
-      setDb(DetalleStore.getAll());
+  async function load(p=page) {
+    setLoading(true);
+    try {
+      const res = await listDetalleVentas(idVenta);
+      const mapped: RowExt[] = res.results.map((d: DetalleVenta)=>({
+        id: d.id_detalle_venta,
+        nombre: `#${d.id_detalle_venta}`,
+        producto: d.producto,
+        cantidad: Number(d.cantidad),
+        precio_unitario: Number(d.precio_unitario),
+        costo_unitario_venta: Number(d.costo_unitario_venta),
+      }));
+      setRows(mapped);
+      setCount(mapped.length);
+      setSubtotal(res.subtotal);
+      setPage(1);
+    } finally {
+      setLoading(false);
     }
   }
 
-  function onSave(e: React.FormEvent){
+  useEffect(()=>{
+    if(!idVenta || Number.isNaN(idVenta)) return;
+    (async()=> {
+
+     const prods = await listProductos({ page:1, page_size:1000 });
+     // tolerante a {results:[...]} o a [...]
+     const arr = Array.isArray((prods as any)?.results) ? (prods as any).results : (prods as any);
+     const safe = (Array.isArray(arr) ? arr : []).filter((p:any)=>(
+       p && typeof p.id_producto !== "undefined" && typeof p.nombre_producto !== "undefined"
+     ));
+     setProductos(safe);
+      await load(1);
+    })();
+  },[idVenta]); // eslint-disable-line
+
+  function onNewClick(){
+    setEditId(null);
+    setForm({ id_producto:"", cantidad:"" });
+    setOpen(true);
+  }
+  function onEditClick(row: Row){
+    const r = rows.find(x=>x.id===row.id);
+    if(!r) return;
+    setEditId(r.id);
+    setForm({ id_producto: String(productos.find(p=>p.nombre_producto===r.producto)?.id_producto ?? ""), cantidad: String(r.cantidad) });
+    setOpen(true);
+  }
+  async function onDeleteClick(row: Row){
+    const ok = confirm("¿Eliminar ítem del detalle?");
+    if(!ok) return;
+    try{
+      setLoading(true);
+      await deleteDetalleVenta(idVenta, row.id);
+      await load(1);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onSave(e: React.FormEvent){
     e.preventDefault();
-    if(!edit) return;
-    if(edit.id_detalle_venta===0){
-      DetalleStore.create({
-        id_venta: edit.id_venta,
-        id_producto: edit.id_producto,
-        cantidad: Number(edit.cantidad||0),
-        precio_unitario: Number(edit.precio_unitario||0),
-        costo_unitario_venta: Number(edit.costo_unitario_venta||0),
-      });
-    }else{
-      DetalleStore.update({
-        id_detalle_venta: edit.id_detalle_venta,
-        id_venta: edit.id_venta,
-        id_producto: edit.id_producto,
-        cantidad: Number(edit.cantidad||0),
-        precio_unitario: Number(edit.precio_unitario||0),
-        costo_unitario_venta: Number(edit.costo_unitario_venta||0),
-      });
+    if(!confirm("¿Desea guardar los cambios?")) return;
+
+    const id_producto = Number(form.id_producto);
+    const cantidad = Number(form.cantidad);
+    if(!id_producto){ alert("Seleccione producto."); return; }
+    if(!(cantidad > 0)){ alert("Cantidad debe ser > 0."); return; }
+
+    try{
+      setSaving(true);
+      if(editId==null){
+        await createDetalleVenta(idVenta, {  id_producto: Number(form.id_producto), cantidad: Number(form.cantidad) });
+      }else{
+        await updateDetalleVenta(idVenta, editId, { cantidad });
+      }
+      await load(1);
+      setOpen(false);
+    }catch(err:any){
+      alert(err?.response?.data?.detail || err?.message || "Error al guardar.");
+    }finally{
+      setSaving(false);
     }
-    setOpen(false);
   }
 
   return (
-    <div style={{display:"grid", gap:"1rem"}}>
-      {/* Encabezado / filtros */}
-      <div className="card" style={{display:"grid", gap:".8rem"}}>
-        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:".6rem"}}>
-          <div>
-            <label>Venta</label>
-            <select className="select" value={ventaSel} onChange={e=>setVentaSel(Number(e.target.value))}>
-              {db.ventas.map(v=>(
-                <option key={v.id_venta} value={v.id_venta}>#{v.id_venta} • {v.cliente} ({v.tipo_transaccion})</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label>Buscar producto / ID</label>
-            <input className="input" placeholder="Texto…" value={q} onChange={e=>setQ(e.target.value)} />
-          </div>
-          <div style={{display:"flex", gap:".6rem", alignItems:"flex-end", justifyContent:"flex-end"}}>
-            <button className="secondary" onClick={limpiar}>Limpiar</button>
-            <button onClick={onNew}>+ Agregar línea</button>
-          </div>
-        </div>
-
-        {ventaInfo && (
-          <div style={{opacity:.8}}>
-            <b>Cliente:</b> {ventaInfo.cliente} &nbsp;•&nbsp; <b>Tipo:</b> {ventaInfo.tipo_transaccion}
-          </div>
-        )}
+    <>
+      <div className="card" style={{ display:"flex", gap:".6rem", alignItems:"center", marginBottom:".6rem" }}>
+        <button className="secondary" onClick={()=> navigate("/ventas")}>← Volver a Ventas</button>
+        <div style={{marginLeft:".6rem"}}><b>Detalle de la venta #{idVenta}</b></div>
+        <div style={{marginLeft:"auto"}}>Subtotal (SQL): <b>Q {Number(subtotal).toFixed(2)}</b></div>
       </div>
 
-      {/* Totales visibles */}
-      <div className="card" style={{display:"flex", gap:"1rem", alignItems:"center", flexWrap:"wrap"}}>
-        <b>Detalle de ventas</b>
-        <span style={{opacity:.8}}>Líneas: <b>{totales.lineas}</b></span>
-        <span style={{opacity:.8}}>Total venta: <b>Q {totales.total.toFixed(2)}</b></span>
-        <span style={{opacity:.8}}>Total costo: <b>Q {totales.totalCosto.toFixed(2)}</b></span>
-        <span style={{opacity:.8}}>Margen: <b>Q {totales.margen.toFixed(2)}</b></span>
-        <div style={{marginLeft:"auto", display:"flex", gap:".5rem"}}>
-          <button className="secondary">Exportar CSV (UI)</button>
-          <button className="secondary">Imprimir (UI)</button>
-        </div>
-      </div>
+      <CatalogScaffold
+        titulo="Ítems de venta"
+        rows={rows}
+        totalCount={rows.length}
+        page={page}
+        pageSize={pageSize}
+        loading={loading}
+        onNewClick={onNewClick}
+        onEditClick={onEditClick}
+        onDeleteClick={onDeleteClick}
+        onPageChange={(next)=>{ /* local paging */ }}
+        extraColumns={[
+          { header: "Producto", render: (r)=> (r as RowExt).producto },
+          { header: "Cantidad", alignRight:true, render: (r)=> (r as RowExt).cantidad.toFixed(2) },
+          { header: "Precio unit.", alignRight:true, render: (r)=> (r as RowExt).precio_unitario.toFixed(2) },
+          { header: "Costo unit.", alignRight:true, render: (r)=> (r as RowExt).costo_unitario_venta.toFixed(2) },
+        ]}
+        exportPdf={{
+          filename: `detalle-venta-${idVenta}.pdf`,
+          headers: ["ID Det.", "Producto", "Cantidad", "Precio unit.", "Costo unit."],
+          mapRow: (r)=>{
+            const d = r as RowExt;
+            return [d.id, d.producto, d.cantidad.toFixed(2), d.precio_unitario.toFixed(2), d.costo_unitario_venta.toFixed(2)];
+          },
+          footerNote: `Venta #${idVenta} • Exportado desde Multilazos`,
+          confirm: true,
+          confirmMessage: "¿Desea exportar el PDF del detalle (página visible)?",
+        }}
+      />
 
-      {/* Tabla */}
-      <div className="card">
-        <table className="table">
-          <thead>
-            <tr>
-              <th style={{width:90}}>#Detalle</th>
-              <th style={{minWidth:220}}>Producto</th>
-              <th style={{width:120, textAlign:"right"}}>Cantidad</th>
-              <th style={{width:140, textAlign:"right"}}>Precio (Q)</th>
-              <th style={{width:160, textAlign:"right"}}>Costo histórico (Q)</th>
-              <th style={{width:140, textAlign:"right"}}>Subtotal (Q)</th>
-              <th style={{width:240}}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(d=>{
-              const prod = db.productos.find(p=>p.id_producto===d.id_producto)?.nombre_producto ?? "—";
-              const subtotal = d.cantidad * d.precio_unitario;
-              return (
-                <tr key={d.id_detalle_venta}>
-                  <td>#{d.id_detalle_venta}</td>
-                  <td>{prod}</td>
-                  <td style={{textAlign:"right"}}>{d.cantidad}</td>
-                  <td style={{textAlign:"right"}}>Q {d.precio_unitario.toFixed(2)}</td>
-                  <td style={{textAlign:"right"}}>Q {d.costo_unitario_venta.toFixed(2)}</td>
-                  <td style={{textAlign:"right"}}><b>Q {subtotal.toFixed(2)}</b></td>
-                  <td style={{display:"flex", gap:".4rem"}}>
-                    <button className="secondary" onClick={()=>onEditRow(d)}>Editar</button>
-                    <button className="warn" onClick={()=>onDeleteRow(d.id_detalle_venta)}>Eliminar</button>
-                  </td>
-                </tr>
-              );
-            })}
-            {rows.length===0 && (
-              <tr><td colSpan={7} style={{padding:"1rem"}}>Sin líneas para esta venta (UI).</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {open && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.25)", display:"grid", placeItems:"center", zIndex:50 }}>
+          <form className="card" onSubmit={onSave} style={{ minWidth: 560, width:"min(820px,95vw)" }}>
+            <h3 style={{marginTop:0}}>{editId==null ? "Agregar producto" : "Editar cantidad"}</h3>
 
-      {/* Modal CRUD */}
-      {open && edit && (
-        <div style={{position:"fixed", inset:0, background:"rgba(0,0,0,.25)", display:"grid", placeItems:"center", zIndex:50}}>
-          <form className="card" onSubmit={onSave} style={{minWidth:420, width:"min(760px,95vw)"}}>
-            <h3 style={{marginTop:0}}>{edit.id_detalle_venta===0 ? "Agregar línea" : `Editar línea #${edit.id_detalle_venta}`}</h3>
-
-            <div style={{display:"grid", gap:".8rem", gridTemplateColumns:"1fr 1fr"}}>
-              <div style={{gridColumn:"1 / span 2"}}>
+            <div style={{ display:"grid", gap:".8rem", gridTemplateColumns:"2fr 1fr" }}>
+              <div>
                 <label>Producto</label>
-                <select className="select" value={edit.id_producto} onChange={e=>setEdit({...edit, id_producto:Number(e.target.value)})}>
-                  {db.productos.map(p=>(
+                <select
+                  className="input"
+                  value={form.id_producto}
+                  onChange={e=>setForm(f=>({ ...f, id_producto: e.target.value }))}
+                  disabled={editId!=null} // no cambiar producto en edición
+                >
+                  <option value="">Seleccione…</option>
+                  {productos.map(p=>(
                     <option key={p.id_producto} value={p.id_producto}>{p.nombre_producto}</option>
                   ))}
                 </select>
@@ -201,34 +179,21 @@ export default function DetalleVentas(){
 
               <div>
                 <label>Cantidad</label>
-                <input className="input" value={String(edit.cantidad)} onChange={e=>setEdit({...edit, cantidad:Number(e.target.value)||0})}/>
-              </div>
-
-              <div>
-                <label>Precio unitario (Q)</label>
-                <input className="input" value={String(edit.precio_unitario)} onChange={e=>setEdit({...edit, precio_unitario:Number(e.target.value)||0})}/>
-              </div>
-
-              <div>
-                <label>Costo histórico (Q)</label>
-                <input className="input" value={String(edit.costo_unitario_venta)} onChange={e=>setEdit({...edit, costo_unitario_venta:Number(e.target.value)||0})}/>
-              </div>
-
-              <div style={{alignSelf:"end", justifySelf:"end"}}>
-                <div style={{opacity:.7, fontSize:12}}>Subtotal</div>
-                <div style={{fontWeight:700}}>
-                  Q { ( (Number(edit.cantidad)||0) * (Number(edit.precio_unitario)||0) ).toFixed(2) }
-                </div>
+                <input className="input" type="number" step="0.01" min="0" value={form.cantidad}
+                  onChange={e=>setForm(f=>({ ...f, cantidad: e.target.value }))}/>
               </div>
             </div>
 
-            <div style={{display:"flex", gap:".6rem", justifyContent:"flex-end", marginTop:"1rem"}}>
-              <button type="button" className="secondary" onClick={()=>setOpen(false)}>Cancelar</button>
-              <button type="submit">Guardar</button>
+            <div style={{ display:"flex", gap:".6rem", justifyContent:"flex-end", marginTop:"1rem" }}>
+              <button type="button" className="secondary" onClick={()=>setOpen(false)} disabled={saving}>Cancelar</button>
+              <button type="submit" disabled={saving}>{saving ? "Guardando..." : "Guardar"}</button>
+            </div>
+            <div style={{marginTop:".6rem", fontSize:12, opacity:.7}}>
+              * El precio y costo se toman automáticamente del producto y el subtotal lo calcula SQL.
             </div>
           </form>
         </div>
       )}
-    </div>
+    </>
   );
 }

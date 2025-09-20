@@ -10,6 +10,10 @@ from .views_clientes_crud import clientes_list, clientes_detail
 from .views_productos import productos_list, productos_detail
 from .views_gastos import gastos_list, gastos_detail
 from .views_dim_fecha import dim_fecha_lookup, dim_fecha_detail
+from .views_ventas import  ventas_list, ventas_detail, ventas_totales_mes, detalle_ventas_list, detalle_venta_detail
+from .views_bitacora import bitacora_ventas_list
+from .views_cuotas import cuotas_list, cuota_asignar_pago
+
 
 
 urlpatterns = [
@@ -43,5 +47,20 @@ urlpatterns = [
     #DIM FECHA
     path('dim-fecha/', dim_fecha_lookup, name='dim-fecha-lookup'),
     path('dim-fecha/<int:id_fecha>/', dim_fecha_detail, name='dim-fecha-detail'),
+    #vENTAS
+    path('ventas/', ventas_list, name='ventas-list'),
+    path('ventas/<int:id_venta>/', ventas_detail, name='ventas-detail'),
+    path('ventas/totales-mes/', ventas_totales_mes, name='ventas-totales-mes'),
+    #detalle ventas
+    path('ventas/<int:id_venta>/detalle/', detalle_ventas_list, name='detalle-ventas-list'),
+    path('ventas/<int:id_venta>/detalle/<int:id_detalle>/', detalle_venta_detail, name='detalle-venta-detail'),
+    #bitacora ventas
+    path('bitacora-ventas/', bitacora_ventas_list, name='bitacora-ventas-list'),
+    #cuotas
+    path('cuotas/', cuotas_list, name='cuotas_list'),
+    path('cuotas/<int:id_cuota>/asignar-pago/', cuota_asignar_pago, name='cuota_asignar_pago'),
+
+
+    
 
 ]

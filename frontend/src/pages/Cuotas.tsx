@@ -1,190 +1,187 @@
-import { useMemo, useState } from "react";
+// src/pages/Cuotas.tsx
+import { useEffect, useMemo, useState } from "react";
 import EmptyState from "../components/EmptyState";
+import { listCuotas, asignarPagoCuota } from "../services/cuotas";
+import type { CuotaCredito } from "../types/cuotas";
 
-/**
- * Alineado al script:
- * - Tabla base: cuota_creditos (id_cuota, id_venta, numero_cuota, id_fecha_venc, monto_programado)
- * - Vista v_cuotas_estado: (id_cuota, id_venta, numero_cuota, id_fecha_venc, monto_programado, monto_pagado, saldo_pendiente, estado)
- * En UI usamos fecha ISO (yyyy-mm-dd). El mapeo a dim_fecha se hará en backend.
- */
+// PDF
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
-type EstadoCuota = "pendiente" | "parcial" | "pagada";
+type Filtros = {
+  q: string;
+  desde?: string;
+  hasta?: string;
+  id_venta?: string;
+};
 
-type TCuota = {
+type RowUI = {
   id: number;
   idVenta: number;
   numero: number;
-  fechaVenc: string;          // ISO en UI
-  montoProgramado: number;
-  montoPagado: number;        // agregado en UI para “simular” v_cuotas_estado
-  saldo: number;              // programado - pagado
-  estado: EstadoCuota;
+  fechaVenc: string;         // ISO o "-"
+  montoProgramado: number;   // number
 };
 
 export default function Cuotas(){
-  // Datos en memoria (UI)
-  const [data, setData] = useState<TCuota[]>([]);
+  const [rows, setRows] = useState<RowUI[]>([]);
+  const [count, setCount] = useState(0);
+  const [loading, setLoading] = useState(false);
 
-  // Filtros
-  const [q, setQ] = useState("");                         // busca por venta o número
-  const [estado, setEstado] = useState<"todas" | EstadoCuota>("todas");
-  const [desde, setDesde] = useState("");
-  const [hasta, setHasta] = useState("");
+  // Filtros (mismo look & feel, sin “estado”)
+  const [f, setF] = useState<Filtros>({ q: "" });
 
-  // Modal CRUD de cuota
-  const [open, setOpen] = useState(false);
-  const [editId, setEditId] = useState<number|null>(null);
-  const [form, setForm] = useState<{
-    idVenta: number|string;
-    numero: number|string;
-    fechaVenc: string;
-    montoProgramado: number|string;
-  }>({ idVenta:"", numero:"", fechaVenc:"", montoProgramado:"" });
-
-  // Modal simple para “asignar pago” (UI)
+  // modal Asignar pago
   const [openPago, setOpenPago] = useState(false);
-  const [cuotaPagoId, setCuotaPagoId] = useState<number|null>(null);
-  const [montoPago, setMontoPago] = useState<number|string>("");
+  const [cuotaSel, setCuotaSel] = useState<RowUI | null>(null);
+  const [montoPago, setMontoPago] = useState<string>("");
+  const [fechaPago, setFechaPago] = useState<string>(() => new Date().toISOString().slice(0,10));
+  const [savingPago, setSavingPago] = useState(false);
 
-  // Filtrado
-  const filtered = useMemo(()=>{
-    return data.filter(c => {
-      const texto = [`venta:${c.idVenta}`, `n:${c.numero}`, c.estado, c.fechaVenc].join(" ").toLowerCase();
-      const okTexto = texto.includes(q.toLowerCase());
-      const okEstado = (estado==="todas") || c.estado===estado;
-      const okDesde = !desde || c.fechaVenc >= desde;
-      const okHasta = !hasta || c.fechaVenc <= hasta;
-      return okTexto && okEstado && okDesde && okHasta;
-    });
-  }, [data,q,estado,desde,hasta]);
-
-  // Totales (período filtrado)
-  const totales = useMemo(()=>{
-    const base = { programado:0, pagado:0, saldo:0 };
-    for(const c of filtered){
-      base.programado += c.montoProgramado;
-      base.pagado    += c.montoPagado;
-      base.saldo     += c.saldo;
+  async function load(){
+    setLoading(true);
+    try{
+      const res = await listCuotas({
+        q: f.q || undefined,
+        desde: f.desde || undefined,
+        hasta: f.hasta || undefined,
+        id_venta: f.id_venta ? Number(f.id_venta) : undefined,
+        page: 1, page_size: 1000,
+      });
+      const mapped = res.results.map(c => ({
+        id: c.id_cuota,
+        idVenta: c.id_venta,
+        numero: c.numero_cuota,
+        fechaVenc: c.fecha_venc_iso || "-",
+        montoProgramado: Number(c.monto_programado),
+      }));
+      setRows(mapped);
+      setCount(res.count);
+    } finally {
+      setLoading(false);
     }
-    return base;
+  }
+
+  useEffect(()=>{ load(); }, []); // init
+  useEffect(()=>{ load(); }, [f.q, f.desde, f.hasta, f.id_venta]); // recarga al cambiar filtros
+
+  // filtrado adicional en UI (opcional por si deseas texto libre extra)
+  const filtered = useMemo(()=>{
+    const q = (f.q||"").toLowerCase();
+    return rows.filter(r=>{
+      const texto = [`venta:${r.idVenta}`, `n:${r.numero}`, r.fechaVenc].join(" ").toLowerCase();
+      if(q && !texto.includes(q)) return false;
+      if(f.desde && r.fechaVenc !== "-" && r.fechaVenc < f.desde) return false;
+      if(f.hasta && r.fechaVenc !== "-" && r.fechaVenc > f.hasta) return false;
+      if(f.id_venta && String(r.idVenta)!==String(f.id_venta)) return false;
+      return true;
+    });
+  }, [rows, f]);
+
+  // totales visibles
+  const totProgramado = useMemo(()=>{
+    return filtered.reduce((acc, r)=> acc + (r.montoProgramado||0), 0);
   }, [filtered]);
 
-  // Paginación simple
   const [page, setPage] = useState(1);
   const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageData = useMemo(()=>{
     const i = (page-1)*pageSize;
     return filtered.slice(i, i+pageSize);
-  }, [filtered,page]);
-  function limpiar(){ setQ(""); setEstado("todas"); setDesde(""); setHasta(""); setPage(1); }
+  }, [filtered, page]);
 
-  // Helpers de estado (UI, sin validaciones)
-  function calcularEstado(montoProgramado: number, montoPagado: number): EstadoCuota{
-    if(montoPagado <= 0) return "pendiente";
-    if(montoPagado < montoProgramado) return "parcial";
-    return "pagada";
+  function limpiar(){
+    setF({ q:"" });
+    setPage(1);
   }
 
-  // CRUD (sin validaciones)
-  function onNew(){
-    setEditId(null);
-    setForm({ idVenta:"", numero:"", fechaVenc:"", montoProgramado:"" });
-    setOpen(true);
-  }
-  function onEdit(id:number){
-    const c = data.find(x=>x.id===id); if(!c) return;
-    setEditId(id);
-    setForm({
-      idVenta: c.idVenta,
-      numero: c.numero,
-      fechaVenc: c.fechaVenc,
-      montoProgramado: c.montoProgramado,
-    });
-    setOpen(true);
-  }
-  function onDelete(id:number){
-    if(confirm("¿Eliminar cuota? (UI)")) setData(d=>d.filter(x=>x.id!==id));
-  }
-  function onSave(e:React.FormEvent){
-    e.preventDefault();
-    const idVenta = Number(form.idVenta || 0);
-    const numero = Number(form.numero || 0);
-    const montoProgramado = Number(form.montoProgramado || 0);
-    const fechaVenc = form.fechaVenc || "";
+  function exportPDF(){
+    if(!confirm("¿Desea exportar las cuotas filtradas a PDF?")) return;
 
-    if(editId==null){
-      const next = Math.max(0, ...data.map(x=>x.id)) + 1;
-      const montoPagado = 0;
-      const saldo = +(montoProgramado - montoPagado).toFixed(2);
-      const est = calcularEstado(montoProgramado, montoPagado);
-      setData(d=>[...d, {
-        id: next, idVenta, numero, fechaVenc,
-        montoProgramado, montoPagado, saldo, estado: est
-      }]);
-    }else{
-      setData(d=>d.map(x=>{
-        if(x.id!==editId) return x;
-        const montoPagado = x.montoPagado; // mantenemos pagos ya “registrados” en UI
-        const saldo = +(montoProgramado - montoPagado).toFixed(2);
-        const est = calcularEstado(montoProgramado, montoPagado);
-        return { ...x, idVenta, numero, fechaVenc, montoProgramado, saldo, estado: est };
-      }));
+    const doc = new jsPDF({ unit:"pt", format:"a4" });
+    const title = `Cuotas de crédito (${filtered.length} registros)`;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(14);
+    doc.text(title, 40, 40);
+
+    const filtrosLinea = [
+      f.q ? `Buscar="${f.q}"` : null,
+      f.desde ? `Desde=${f.desde}` : null,
+      f.hasta ? `Hasta=${f.hasta}` : null,
+      f.id_venta ? `#Venta=${f.id_venta}` : null,
+    ].filter(Boolean).join(" • ");
+    if(filtrosLinea){
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+      doc.text(filtrosLinea, 40, 58);
     }
-    setOpen(false);
+
+    const head = [["#Venta", "N° Cuota", "Vence", "Programado (Q)"]];
+    const body = filtered.map(r=>[
+      `#${r.idVenta}`, String(r.numero), r.fechaVenc || "-", r.montoProgramado.toFixed(2)
+    ]);
+
+    autoTable(doc, {
+      startY: 70,
+      head, body,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [42,106,195] },
+      theme: "striped",
+      didDrawPage: data => {
+        const pageSize = doc.internal.pageSize;
+        doc.setFontSize(8); doc.setTextColor(120);
+        doc.text("Exportado desde Multilazos", 40, pageSize.height - 24);
+        doc.text(`Página ${doc.getCurrentPageInfo().pageNumber}`, pageSize.width - 80, pageSize.height - 24);
+      },
+      margin: { left: 40, right: 40 },
+    });
+
+    doc.save("cuotas.pdf");
   }
 
-  // “Asignar pago” (UI sin validación)
-  function abrirPago(id:number){
-    setCuotaPagoId(id);
+  // --- Asignar pago ---
+  function abrirPago(r: RowUI){
+    setCuotaSel(r);
     setMontoPago("");
+    setFechaPago(new Date().toISOString().slice(0,10));
     setOpenPago(true);
   }
-  function guardarPago(e:React.FormEvent){
+  async function guardarPago(e: React.FormEvent){
     e.preventDefault();
-    const m = Number(montoPago || 0);
-    setData(d=>d.map(x=>{
-      if(x.id!==cuotaPagoId) return x;
-      const nuevoPagado = +(x.montoPagado + m).toFixed(2);
-      const nuevoSaldo = +(x.montoProgramado - nuevoPagado).toFixed(2);
-      const est = calcularEstado(x.montoProgramado, nuevoPagado);
-      return { ...x, montoPagado: nuevoPagado, saldo: nuevoSaldo, estado: est };
-    }));
-    setOpenPago(false);
+    if(!cuotaSel) return;
+    const m = Number(montoPago);
+    if(!(m>0)){ alert("Monto debe ser > 0"); return; }
+    try{
+      setSavingPago(true);
+      await asignarPagoCuota(cuotaSel.id, { monto_pago: m, fecha_iso: fechaPago || undefined });
+      setOpenPago(false);
+    }catch(err:any){
+      alert(err?.response?.data?.detail || err?.message || "Error al registrar pago.");
+    }finally{
+      setSavingPago(false);
+    }
   }
 
   return (
     <div style={{display:"grid",gap:"1rem"}}>
-      {/* Filtros */}
-      <div className="card" style={{display:"grid",gap:".7rem",gridTemplateColumns:"2fr 1fr 1fr 1fr 1fr"}}>
-        <input className="input" placeholder="Buscar (venta, número, estado…)" value={q} onChange={e=>setQ(e.target.value)} />
-        <select className="select" value={estado} onChange={e=>setEstado(e.target.value as any)}>
-          <option value="todas">Todas</option>
-          <option value="pendiente">Pendiente</option>
-          <option value="parcial">Parcial</option>
-          <option value="pagada">Pagada</option>
-        </select>
-        <input className="input" type="date" value={desde} onChange={e=>setDesde(e.target.value)} />
-        <input className="input" type="date" value={hasta} onChange={e=>setHasta(e.target.value)} />
-        <div style={{display:"flex",gap:".5rem"}}>
-          <button className="secondary" onClick={limpiar} style={{width:"100%"}}>Limpiar</button>
-          <button onClick={onNew} style={{width:"100%"}}>+ Nueva cuota</button>
-        </div>
+      {/* Filtros (mismo diseño, sin “estado”) */}
+      <div className="card" style={{display:"grid",gap:".7rem",gridTemplateColumns:"2fr 1fr 1fr 1fr"}}>
+        <input className="input" placeholder="Buscar (venta, número, fecha…)" value={f.q} onChange={e=>setF({...f, q:e.target.value})} />
+        <input className="input" type="date" value={f.desde || ""} onChange={e=>setF({...f, desde: e.target.value || undefined})} />
+        <input className="input" type="date" value={f.hasta || ""} onChange={e=>setF({...f, hasta: e.target.value || undefined})} />
+        <input className="input" placeholder="# Venta" value={f.id_venta || ""} onChange={e=>setF({...f, id_venta: e.target.value || undefined})} />
       </div>
 
       {/* Totales del período visible */}
       <div className="card" style={{display:"flex",gap:"1rem",alignItems:"center",flexWrap:"wrap"}}>
         <b>Totales (selección):</b>
-        <div>Programado: <b>Q {totales.programado.toFixed(2)}</b></div>
-        <div>Pagado: <b>Q {totales.pagado.toFixed(2)}</b></div>
-        <div>Saldo: <b>Q {totales.saldo.toFixed(2)}</b></div>
+        <div>Programado: <b>Q {totProgramado.toFixed(2)}</b></div>
         <div style={{marginLeft:"auto",display:"flex",gap:".5rem"}}>
-          <button className="secondary">Exportar CSV (UI)</button>
-          <button className="secondary">Imprimir (UI)</button>
+          <button className="secondary" onClick={limpiar} disabled={loading}>Limpiar</button>
+          <button className="secondary" onClick={exportPDF} disabled={loading}>Exportar PDF</button>
         </div>
       </div>
 
-      {/* Tabla */}
+      {/* Tabla (sin CRUD; solo “Asignar pago”) */}
       <div className="card">
         <table className="table">
           <thead>
@@ -193,9 +190,6 @@ export default function Cuotas(){
               <th>N° Cuota</th>
               <th>Vence</th>
               <th>Programado</th>
-              <th>Pagado</th>
-              <th>Saldo</th>
-              <th>Estado</th>
               <th></th>
             </tr>
           </thead>
@@ -206,32 +200,23 @@ export default function Cuotas(){
                 <td>{c.numero}</td>
                 <td>{c.fechaVenc || "-"}</td>
                 <td>Q {c.montoProgramado.toFixed(2)}</td>
-                <td>Q {c.montoPagado.toFixed(2)}</td>
-                <td>Q {c.saldo.toFixed(2)}</td>
-                <td>
-                  <span className="badge" style={{
-                    background: c.estado==="pagada" ? "#e6f7ed" : c.estado==="parcial" ? "#fff5e6" : "#fdecec",
-                    color:      c.estado==="pagada" ? "#177245" : c.estado==="parcial" ? "#7a4e00" : "#b3261e"
-                  }}>{c.estado}</span>
-                </td>
                 <td style={{display:"flex",gap:".4rem"}}>
-                  <button onClick={()=>abrirPago(c.id)}>Asignar pago (UI)</button>
-                  <button className="secondary" onClick={()=>onEdit(c.id)}>Editar</button>
-                  <button className="warn" onClick={()=>onDelete(c.id)}>Eliminar</button>
+                  <button onClick={()=>abrirPago(c)}>Asignar pago</button>
                 </td>
               </tr>
             ))}
-            {pageData.length===0 && (
+            {pageData.length===0 && !loading && (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={5}>
                   <EmptyState
                     title="No hay cuotas"
-                    subtitle="Crea una cuota para una venta. Al conectar el backend, se poblarán desde la vista v_cuotas_estado."
-                    actionLabel="+ Nueva cuota"
-                    onAction={onNew}
+                    subtitle="Se generan automáticamente al crear ventas a crédito. Ajusta los filtros para ver resultados."
                   />
                 </td>
               </tr>
+            )}
+            {loading && (
+              <tr><td colSpan={5} style={{padding:"1rem"}}>Cargando…</td></tr>
             )}
           </tbody>
         </table>
@@ -244,51 +229,24 @@ export default function Cuotas(){
         </div>
       </div>
 
-      {/* Modal CRUD de cuota (sin validaciones) */}
-      {open && (
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.25)",display:"grid",placeItems:"center",zIndex:50}}>
-          <form className="card" onSubmit={onSave} style={{minWidth:380,width:"min(720px, 95vw)"}}>
-            <h3 style={{marginTop:0}}>{editId==null?"Nueva cuota":"Editar cuota"}</h3>
-            <div style={{display:"grid",gap:".6rem",gridTemplateColumns:"1fr 1fr 1fr 1fr"}}>
-              <div>
-                <label>ID venta</label>
-                <input className="input" value={form.idVenta} onChange={e=>setForm({...form,idVenta:e.target.value})}/>
-              </div>
-              <div>
-                <label>N° cuota</label>
-                <input className="input" value={form.numero} onChange={e=>setForm({...form,numero:e.target.value})}/>
-              </div>
-              <div>
-                <label>Vencimiento</label>
-                <input className="input" type="date" value={form.fechaVenc} onChange={e=>setForm({...form,fechaVenc:e.target.value})}/>
-              </div>
-              <div>
-                <label>Monto programado (Q)</label>
-                <input className="input" type="number" step={0.01} value={form.montoProgramado} onChange={e=>setForm({...form,montoProgramado:e.target.value})}/>
-              </div>
-            </div>
-            <div style={{display:"flex",gap:".6rem",justifyContent:"flex-end",marginTop:"1rem"}}>
-              <button type="button" className="secondary" onClick={()=>setOpen(false)}>Cancelar</button>
-              <button type="submit">Guardar</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* Modal Asignar pago (UI sin validación) */}
-      {openPago && (
+      {/* Modal Asignar pago */}
+      {openPago && cuotaSel && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.25)",display:"grid",placeItems:"center",zIndex:50}}>
           <form className="card" onSubmit={guardarPago} style={{minWidth:320,width:"min(520px, 95vw)"}}>
             <h3 style={{marginTop:0}}>Asignar pago a cuota</h3>
             <div style={{display:"grid",gap:".6rem",gridTemplateColumns:"1fr 1fr"}}>
-              <div style={{gridColumn:"1 / -1"}}>
-                <label>Monto a asignar (Q)</label>
-                <input className="input" type="number" step={0.01} value={montoPago} onChange={e=>setMontoPago(e.target.value)} />
+              <div>
+                <label>Fecha pago</label>
+                <input className="input" type="date" value={fechaPago} onChange={e=>setFechaPago(e.target.value)} />
+              </div>
+              <div>
+                <label>Monto (Q)</label>
+                <input className="input" type="number" step="0.01" value={montoPago} onChange={e=>setMontoPago(e.target.value)} />
               </div>
             </div>
             <div style={{display:"flex",gap:".6rem",justifyContent:"flex-end",marginTop:"1rem"}}>
-              <button type="button" className="secondary" onClick={()=>setOpenPago(false)}>Cancelar</button>
-              <button type="submit">Guardar</button>
+              <button type="button" className="secondary" onClick={()=>setOpenPago(false)} disabled={savingPago}>Cancelar</button>
+              <button type="submit" disabled={savingPago}>{savingPago ? "Guardando..." : "Guardar"}</button>
             </div>
           </form>
         </div>

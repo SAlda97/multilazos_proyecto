@@ -26,6 +26,7 @@ export default function App(){
         <Route path="/" element={<Navigate to="/dashboard" replace/>}/>
         <Route path="/dashboard" element={<Dashboard/>}/>
         <Route path="/ventas" element={<Ventas/>}/>
+        <Route path="/ventas/:id/detalle" element={<DetalleVentas/>} />
         <Route path="/clientes" element={<Clientes/>}/> 
         <Route path="/productos" element={<Productos/>}/> 
         <Route path="/pagos" element={<Pagos/>}/>
@@ -39,7 +40,7 @@ export default function App(){
         <Route path="/seguridad/usuarios" element={<Usuarios />} />
         <Route path="/seguridad/roles" element={<Roles />} />
         <Route path="/seguridad/permisos" element={<Permisos />} />
-        <Route path="/ventas/detalle" element={<DetalleVentas />} />
+
         <Route path="/estado-cuotas" element={<EstadoCuotas />} />
         <Route path="/bitacora-ventas" element={<BitacoraVentas />} />
         <Route path="*" element={<div className="card">404</div>} />
