@@ -55,7 +55,7 @@ class Cliente(models.Model):
     nombre_cliente = models.CharField(max_length=100, db_column='nombre_cliente')
     apellido_cliente = models.CharField(max_length=100, db_column='apellido_cliente')
     id_tipo_cliente = models.ForeignKey(
-        'TipoCliente',  # tu modelo existente
+        'TipoCliente',  
         on_delete=models.PROTECT,
         db_column='id_tipo_cliente',
         related_name='clientes'
@@ -100,7 +100,7 @@ class Gasto(models.Model):
     id_gasto = models.AutoField(primary_key=True, db_column='id_gasto')
     nombre_gasto = models.CharField(max_length=100, db_column='nombre_gasto')
     monto_gasto = models.DecimalField(max_digits=12, decimal_places=2, db_column='monto_gasto', default=0)
-    id_fecha = models.IntegerField(db_column='id_fecha')  # FK a dim_fecha (mantenemos int)
+    id_fecha = models.IntegerField(db_column='id_fecha')  # FK a dim_fecha
     id_categoria_gastos = models.ForeignKey(
         'CategoriaGasto',
         on_delete=models.PROTECT,
@@ -149,7 +149,7 @@ class DetalleVenta(models.Model):
     cantidad = models.DecimalField(max_digits=12, decimal_places=2, db_column='cantidad')
     precio_unitario = models.DecimalField(max_digits=12, decimal_places=2, db_column='precio_unitario')
     costo_unitario_venta = models.DecimalField(max_digits=12, decimal_places=2, db_column='costo_unitario_venta')
-    # subtotal es columna computada en SQL
+    
     fecha_creacion = models.DateTimeField(db_column='fecha_creacion', null=True, blank=True)
     usuario_creacion = models.CharField(max_length=50, db_column='usuario_creacion', null=True, blank=True)
     fecha_modificacion = models.DateTimeField(db_column='fecha_modificacion', null=True, blank=True)
@@ -160,11 +160,11 @@ class DetalleVenta(models.Model):
 
 class CuotaCredito(models.Model):
     id_cuota = models.AutoField(primary_key=True)
-    id_venta = models.ForeignKey('Venta', db_column='id_venta', on_delete=models.CASCADE)
+    id_venta = models.ForeignKey('Venta', on_delete=models.CASCADE, db_column='id_venta')
     numero_cuota = models.IntegerField()
-    id_fecha_venc = models.IntegerField()  # FK a dim_fecha.id_fecha
+    id_fecha_venc = models.IntegerField()
     monto_programado = models.DecimalField(max_digits=12, decimal_places=2)
-    fecha_creacion = models.DateTimeField()
+    fecha_creacion = models.DateTimeField(auto_now_add=False, null=False)
     usuario_creacion = models.CharField(max_length=50)
     fecha_modificacion = models.DateTimeField(null=True, blank=True)
     usuario_modificacion = models.CharField(max_length=50, null=True, blank=True)
@@ -172,11 +172,12 @@ class CuotaCredito(models.Model):
     class Meta:
         managed = False
         db_table = 'cuota_creditos'
+        unique_together = (('id_venta', 'numero_cuota'),)
 
 class Pago(models.Model):
     id_pago = models.AutoField(primary_key=True)
     id_venta = models.ForeignKey('Venta', db_column='id_venta', on_delete=models.CASCADE)
-    id_fecha = models.IntegerField()  # FK a dim_fecha.id_fecha
+    id_fecha = models.IntegerField()  # FK a dim_fecha (id entero)
     monto_pago = models.DecimalField(max_digits=12, decimal_places=2)
     fecha_creacion = models.DateTimeField()
     usuario_creacion = models.CharField(max_length=50)
@@ -184,8 +185,24 @@ class Pago(models.Model):
     usuario_modificacion = models.CharField(max_length=50, null=True, blank=True)
 
     class Meta:
+        managed = False  # la tabla ya existe en SQL
+        db_table = 'pagos'
+
+class PagoCuota(models.Model):
+    id_pago = models.IntegerField()
+    id_cuota = models.IntegerField()
+    monto_asignado = models.DecimalField(max_digits=12, decimal_places=2)
+    fecha_creacion = models.DateTimeField()
+    usuario_creacion = models.CharField(max_length=50)
+    fecha_modificacion = models.DateTimeField(null=True, blank=True)
+    usuario_modificacion = models.CharField(max_length=50, null=True, blank=True)
+
+    class Meta:
         managed = False
-        db_table = 'pagos'    
+        db_table = 'pago_cuota'
+        unique_together = (('id_pago', 'id_cuota'),)
+
+
 
 # ---------- Utilidades para cuotas ----------
 def _clamp_day(year: int, month: int, day: int) -> int:
@@ -221,36 +238,36 @@ def generar_cuotas_al_crear(sender, instance: 'Venta', created: bool, **kwargs):
         return  # solo crédito
 
     from django.db import connection
-    # ¿Ya existen cuotas para esta venta?
+    # Valida si ya existen cuotas para esta venta
     with connection.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM cuota_creditos WHERE id_venta = %s", [instance.id_venta])
         existe = cur.fetchone()[0]
 
     if existe and int(existe) > 0:
-        return  # ya tiene cuotas (o parciales, no generamos aquí)
+        return  # si tiene cuotas, no hacer nada
 
-    # Tomar plazo y total
+    
     plazo = int(instance.plazo_mes or 0)
     if plazo <= 0:
-        return  # sin plazo => nada que generar
+        return  
 
     total = Decimal(instance.total_venta_final or 0)
     if total <= 0:
         return
 
-    # monto por cuota
+
     monto = (total / Decimal(plazo)).quantize(Decimal('0.01'))
 
-    # fecha base = fecha de la venta (buscar en dim_fecha)
+
     from django.db import connection
     with connection.cursor() as cur:
         cur.execute("SELECT fecha FROM dim_fecha WHERE id_fecha = %s", [instance.id_fecha])
         row = cur.fetchone()
     if not row:
         return
-    fecha_venta = row[0]  # datetime.date
+    fecha_venta = row[0]  
 
-    # Generar N cuotas
+    # Genera registros de cuotas
     from django.utils import timezone
     user = "web"
     now = timezone.now()
@@ -260,7 +277,7 @@ def generar_cuotas_al_crear(sender, instance: 'Venta', created: bool, **kwargs):
         fecha_venc = _add_months_keep_day(fecha_venta, n)
         id_fecha_venc = _fecha_iso_to_id_fecha(fecha_venc)
         if not id_fecha_venc:
-            # si no existe en dim_fecha, saltamos (o podrías crearla en tu ETL)
+            # si no existe en dim_fecha, se salta
             continue
         registros.append((
             instance.id_venta, n, id_fecha_venc, str(monto), now, user

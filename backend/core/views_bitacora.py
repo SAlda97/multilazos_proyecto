@@ -39,7 +39,7 @@ def bitacora_ventas_list(request):
     params = []
 
     if q:
-        # buscamos en usuario_evento, operacion, id_venta y fecha_evento (formato texto)
+        # buscamos en usuario_evento, operacion, id_venta y fecha_evento
         where.append("(usuario_evento LIKE %s OR operacion LIKE %s OR CAST(id_venta AS VARCHAR(20)) LIKE %s OR CONVERT(VARCHAR(19), fecha_evento, 120) LIKE %s)")
         like = f"%{q}%"
         params += [like, like, like, like]
@@ -99,7 +99,7 @@ def bitacora_ventas_list(request):
             "fecha_evento_iso": r[6],
         })
 
-    # no incluimos next/previous reales para simplificar
+   
     return JsonResponse({
         "count": total,
         "next": None,

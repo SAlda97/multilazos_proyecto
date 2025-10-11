@@ -13,8 +13,9 @@ from .views_dim_fecha import dim_fecha_lookup, dim_fecha_detail
 from .views_ventas import  ventas_list, ventas_detail, ventas_totales_mes, detalle_ventas_list, detalle_venta_detail
 from .views_bitacora import bitacora_ventas_list
 from .views_cuotas import cuotas_list, cuota_asignar_pago
-
-
+from .views_pagos import pagos_list, pagos_detail,pago_asignaciones, cuotas_estado_por_venta
+from .views_estado_cuotas import estado_cuotas_list
+from .views_rentabilidades import rentabilidades_resumen
 
 urlpatterns = [
     path('ping/', lambda r: JsonResponse({'ok': True})),
@@ -56,10 +57,20 @@ urlpatterns = [
     path('ventas/<int:id_venta>/detalle/<int:id_detalle>/', detalle_venta_detail, name='detalle-venta-detail'),
     #bitacora ventas
     path('bitacora-ventas/', bitacora_ventas_list, name='bitacora-ventas-list'),
-    #cuotas
-    path('cuotas/', cuotas_list, name='cuotas_list'),
-    path('cuotas/<int:id_cuota>/asignar-pago/', cuota_asignar_pago, name='cuota_asignar_pago'),
-
+     # Listado de cuotas
+    path("cuotas/", cuotas_list),
+    # Asignar pago (POST)
+    path("cuotas/asignar-pago/", cuota_asignar_pago),
+    # Pagos
+    path("pagos/", pagos_list),
+    path("pagos/<int:id_pago>/", pagos_detail),
+    # pago cuotas
+    path("pagos/<int:id_pago>/asignaciones/", pago_asignaciones),
+    path("ventas/<int:id_venta>/cuotas-estado/", cuotas_estado_por_venta),
+    # vista estado cuotas
+    path("estado-cuotas/", estado_cuotas_list),
+    # rentabilidades
+    path("rentabilidades/resumen/", rentabilidades_resumen),
 
     
 
