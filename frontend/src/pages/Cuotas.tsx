@@ -1,187 +1,143 @@
 // src/pages/Cuotas.tsx
-import { useEffect, useMemo, useState } from "react";
-import EmptyState from "../components/EmptyState";
-import { listCuotas, asignarPagoCuota } from "../services/cuotas";
-import type { CuotaCredito } from "../types/cuotas";
-
-// PDF
+import { useEffect, useState } from "react";
+import { listCuotas, asignarPagoCuota, type Cuota } from "../services/cuotas";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { fmtQ } from "../utils/format";
 
 type Filtros = {
   q: string;
   desde?: string;
   hasta?: string;
-  id_venta?: string;
-};
-
-type RowUI = {
-  id: number;
-  idVenta: number;
-  numero: number;
-  fechaVenc: string;         // ISO o "-"
-  montoProgramado: number;   // number
+  venta?: string;
 };
 
 export default function Cuotas(){
-  const [rows, setRows] = useState<RowUI[]>([]);
+  const [rows, setRows] = useState<Cuota[]>([]);
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(false);
 
-  // Filtros (mismo look & feel, sin “estado”)
   const [f, setF] = useState<Filtros>({ q: "" });
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(count/pageSize));
 
-  // modal Asignar pago
+  // Modal pago
   const [openPago, setOpenPago] = useState(false);
-  const [cuotaSel, setCuotaSel] = useState<RowUI | null>(null);
-  const [montoPago, setMontoPago] = useState<string>("");
-  const [fechaPago, setFechaPago] = useState<string>(() => new Date().toISOString().slice(0,10));
-  const [savingPago, setSavingPago] = useState(false);
+  const [cuotaSel, setCuotaSel] = useState<Cuota|null>(null);
+  const [montoPago, setMontoPago] = useState("");
 
-  async function load(){
+  async function load(p=page){
     setLoading(true);
     try{
       const res = await listCuotas({
-        q: f.q || undefined,
+        search: f.q || undefined,
         desde: f.desde || undefined,
         hasta: f.hasta || undefined,
-        id_venta: f.id_venta ? Number(f.id_venta) : undefined,
-        page: 1, page_size: 1000,
+        id_venta: f.venta || undefined,
+        page: p, page_size: pageSize
       });
-      const mapped = res.results.map(c => ({
-        id: c.id_cuota,
-        idVenta: c.id_venta,
-        numero: c.numero_cuota,
-        fechaVenc: c.fecha_venc_iso || "-",
-        montoProgramado: Number(c.monto_programado),
-      }));
-      setRows(mapped);
+      setRows(res.results);
       setCount(res.count);
-    } finally {
+      setPage(p);
+    }finally{
       setLoading(false);
     }
   }
+  useEffect(()=>{ load(1); }, []); // init
+  useEffect(()=>{ load(1); }, [f.q, f.desde, f.hasta, f.venta]); // refiltrar
 
-  useEffect(()=>{ load(); }, []); // init
-  useEffect(()=>{ load(); }, [f.q, f.desde, f.hasta, f.id_venta]); // recarga al cambiar filtros
-
-  // filtrado adicional en UI (opcional por si deseas texto libre extra)
-  const filtered = useMemo(()=>{
-    const q = (f.q||"").toLowerCase();
-    return rows.filter(r=>{
-      const texto = [`venta:${r.idVenta}`, `n:${r.numero}`, r.fechaVenc].join(" ").toLowerCase();
-      if(q && !texto.includes(q)) return false;
-      if(f.desde && r.fechaVenc !== "-" && r.fechaVenc < f.desde) return false;
-      if(f.hasta && r.fechaVenc !== "-" && r.fechaVenc > f.hasta) return false;
-      if(f.id_venta && String(r.idVenta)!==String(f.id_venta)) return false;
-      return true;
-    });
-  }, [rows, f]);
-
-  // totales visibles
-  const totProgramado = useMemo(()=>{
-    return filtered.reduce((acc, r)=> acc + (r.montoProgramado||0), 0);
-  }, [filtered]);
-
-  const [page, setPage] = useState(1);
-  const pageSize = 10;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageData = useMemo(()=>{
-    const i = (page-1)*pageSize;
-    return filtered.slice(i, i+pageSize);
-  }, [filtered, page]);
-
-  function limpiar(){
-    setF({ q:"" });
-    setPage(1);
-  }
+  function limpiar(){ setF({ q:"" }); setPage(1); }
 
   function exportPDF(){
-    if(!confirm("¿Desea exportar las cuotas filtradas a PDF?")) return;
-
+    if(!confirm("¿Exportar cuotas filtradas a PDF?")) return;
     const doc = new jsPDF({ unit:"pt", format:"a4" });
-    const title = `Cuotas de crédito (${filtered.length} registros)`;
-    doc.setFont("helvetica", "bold"); doc.setFontSize(14);
-    doc.text(title, 40, 40);
-
-    const filtrosLinea = [
+    doc.setFont("helvetica","bold"); doc.setFontSize(14);
+    doc.text(`Cuotas (total: ${count})`, 40, 40);
+    const filtros = [
       f.q ? `Buscar="${f.q}"` : null,
       f.desde ? `Desde=${f.desde}` : null,
       f.hasta ? `Hasta=${f.hasta}` : null,
-      f.id_venta ? `#Venta=${f.id_venta}` : null,
+      f.venta ? `#Venta=${f.venta}` : null,
     ].filter(Boolean).join(" • ");
-    if(filtrosLinea){
-      doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-      doc.text(filtrosLinea, 40, 58);
-    }
-
-    const head = [["#Venta", "N° Cuota", "Vence", "Programado (Q)"]];
-    const body = filtered.map(r=>[
-      `#${r.idVenta}`, String(r.numero), r.fechaVenc || "-", r.montoProgramado.toFixed(2)
-    ]);
+    doc.setFont("helvetica","normal"); doc.setFontSize(10);
+    if(filtros) doc.text(filtros, 40, 58);
 
     autoTable(doc, {
       startY: 70,
-      head, body,
-      styles: { fontSize: 9 },
-      headStyles: { fillColor: [42,106,195] },
-      theme: "striped",
-      didDrawPage: data => {
-        const pageSize = doc.internal.pageSize;
+      head: [["#Venta","N° Cuota","Vence","Programado"]],
+      body: rows.map(r=>[
+        `#${r.id_venta}`,
+        r.numero_cuota,
+        r.fecha_venc_iso,
+        Number(r.monto_programado).toFixed(2)
+      ]),
+      styles:{ fontSize:9 },
+      headStyles:{ fillColor:[42,106,195] },
+      theme:"striped",
+      columnStyles:{ 0:{cellWidth:80}, 1:{cellWidth:80}, 2:{cellWidth:120}, 3:{cellWidth:120} },
+      didDrawPage: data=>{
+        const s = doc.internal.pageSize;
         doc.setFontSize(8); doc.setTextColor(120);
-        doc.text("Exportado desde Multilazos", 40, pageSize.height - 24);
-        doc.text(`Página ${doc.getCurrentPageInfo().pageNumber}`, pageSize.width - 80, pageSize.height - 24);
+        doc.text("Exportado desde Multilazos", 40, s.height-24);
+        doc.text(`Página ${doc.getCurrentPageInfo().pageNumber}`, s.width-80, s.height-24);
       },
-      margin: { left: 40, right: 40 },
+      margin:{ left:40, right:40 }
     });
-
     doc.save("cuotas.pdf");
   }
 
-  // --- Asignar pago ---
-  function abrirPago(r: RowUI){
-    setCuotaSel(r);
-    setMontoPago("");
-    setFechaPago(new Date().toISOString().slice(0,10));
-    setOpenPago(true);
-  }
+  function abrirPago(r: Cuota){ setCuotaSel(r); setMontoPago(""); setOpenPago(true); }
   async function guardarPago(e: React.FormEvent){
     e.preventDefault();
-    if(!cuotaSel) return;
-    const m = Number(montoPago);
-    if(!(m>0)){ alert("Monto debe ser > 0"); return; }
+    if (!cuotaSel) return;
+
+    const monto = Number(montoPago || 0);
+    const programado = Number(cuotaSel.monto_programado);
+    const asignado   = Number(cuotaSel.monto_asignado || 0);
+    const saldo      = Number(cuotaSel.saldo_pendiente ?? (programado - asignado));
+
+    if (!(monto > 0)) {
+      alert("El monto debe ser mayor a 0.");
+      return;
+    }
+    if (monto > saldo) {
+      alert(`El monto (Q ${monto.toFixed(2)}) excede el saldo pendiente (Q ${saldo.toFixed(2)}).`);
+      return;
+    }
+
+    const ok = confirm(
+      `¿Confirmar asignación de Q ${monto.toFixed(2)} a la cuota #${cuotaSel.numero_cuota} (venta #${cuotaSel.id_venta})?`
+    );
+    if (!ok) return;
+
     try{
-      setSavingPago(true);
-      await asignarPagoCuota(cuotaSel.id, { monto_pago: m, fecha_iso: fechaPago || undefined });
+      await asignarPagoCuota({ id_cuota: cuotaSel.id_cuota, monto_pago: monto });
+      alert("Pago asignado correctamente.");
       setOpenPago(false);
+      await load(page); // refresca la tabla
     }catch(err:any){
-      alert(err?.response?.data?.detail || err?.message || "Error al registrar pago.");
-    }finally{
-      setSavingPago(false);
+      alert(err?.response?.data?.detail || err?.message || "Error al guardar pago.");
     }
   }
 
   return (
     <div style={{display:"grid",gap:"1rem"}}>
-      {/* Filtros (mismo diseño, sin “estado”) */}
-      <div className="card" style={{display:"grid",gap:".7rem",gridTemplateColumns:"2fr 1fr 1fr 1fr"}}>
-        <input className="input" placeholder="Buscar (venta, número, fecha…)" value={f.q} onChange={e=>setF({...f, q:e.target.value})} />
-        <input className="input" type="date" value={f.desde || ""} onChange={e=>setF({...f, desde: e.target.value || undefined})} />
-        <input className="input" type="date" value={f.hasta || ""} onChange={e=>setF({...f, hasta: e.target.value || undefined})} />
-        <input className="input" placeholder="# Venta" value={f.id_venta || ""} onChange={e=>setF({...f, id_venta: e.target.value || undefined})} />
-      </div>
-
-      {/* Totales del período visible */}
-      <div className="card" style={{display:"flex",gap:"1rem",alignItems:"center",flexWrap:"wrap"}}>
-        <b>Totales (selección):</b>
-        <div>Programado: <b>Q {totProgramado.toFixed(2)}</b></div>
-        <div style={{marginLeft:"auto",display:"flex",gap:".5rem"}}>
+      {/* Filtros */}
+      <div className="card" style={{display:"grid",gap:".7rem"}}>
+        <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:".6rem"}}>
+          <input className="input" placeholder="Buscar (venta, número, fecha…)" value={f.q} onChange={e=>setF({...f, q:e.target.value})}/>
+          <input className="input" type="date" value={f.desde || ""} onChange={e=>setF({...f, desde: e.target.value || undefined})}/>
+          <input className="input" type="date" value={f.hasta || ""} onChange={e=>setF({...f, hasta: e.target.value || undefined})}/>
+          <input className="input" placeholder="# Venta" value={f.venta || ""} onChange={e=>setF({...f, venta: e.target.value || undefined})}/>
+        </div>
+        <div style={{display:"flex",gap:".5rem",justifyContent:"flex-end"}}>
           <button className="secondary" onClick={limpiar} disabled={loading}>Limpiar</button>
           <button className="secondary" onClick={exportPDF} disabled={loading}>Exportar PDF</button>
         </div>
       </div>
 
-      {/* Tabla (sin CRUD; solo “Asignar pago”) */}
+      {/* Tabla */}
       <div className="card">
         <table className="table">
           <thead>
@@ -194,26 +150,55 @@ export default function Cuotas(){
             </tr>
           </thead>
           <tbody>
-            {pageData.map(c=>(
-              <tr key={c.id}>
-                <td>#{c.idVenta}</td>
-                <td>{c.numero}</td>
-                <td>{c.fechaVenc || "-"}</td>
-                <td>Q {c.montoProgramado.toFixed(2)}</td>
+            {rows.map(r=>(
+              <tr key={r.id_cuota}>
+                <td>#{r.id_venta}</td>
+                <td>{r.numero_cuota}</td>
+                <td>{r.fecha_venc_iso}</td>
+                <td>Q {Number(r.monto_programado).toFixed(2)}</td>
                 <td style={{display:"flex",gap:".4rem"}}>
-                  <button onClick={()=>abrirPago(c)}>Asignar pago</button>
+                  {(() => {
+                    const asignado = Number(r.monto_asignado || 0);
+                    const programado = Number(r.monto_programado);
+                    const saldo = Number(r.saldo_pendiente ?? (programado - asignado));
+
+                    // Deshabilitar únicamente cuando el saldo esté en 0
+                    const sinSaldo = saldo <= 0;
+                    const disabled = sinSaldo;
+
+                    // Etiqueta según estado
+                    const label = sinSaldo
+                      ? "Saldo en 0"
+                      : (asignado > 0 ? "Asignar más pago" : "Asignar pago");
+
+                    // Estilo cuando está deshabilitado (saldo en 0)
+                    const styleWhenDisabled: React.CSSProperties = {
+                      background: "#e6f7ed",
+                      color: "#166534",
+                      borderColor: "#bbf7d0",
+                      cursor: "not-allowed"
+                    };
+
+                    return (
+                      <button
+                        onClick={() => abrirPago(r)}
+                        disabled={disabled}
+                        style={disabled ? styleWhenDisabled : undefined}
+                        title={
+                          disabled
+                            ? "Esta cuota ya no tiene saldo disponible."
+                            : "Registrar o incrementar pago para esta cuota"
+                        }
+                      >
+                        {label}
+                      </button>
+                    );
+                  })()}
                 </td>
               </tr>
             ))}
-            {pageData.length===0 && !loading && (
-              <tr>
-                <td colSpan={5}>
-                  <EmptyState
-                    title="No hay cuotas"
-                    subtitle="Se generan automáticamente al crear ventas a crédito. Ajusta los filtros para ver resultados."
-                  />
-                </td>
-              </tr>
+            {rows.length===0 && !loading && (
+              <tr><td colSpan={5} style={{padding:"1rem"}}>Sin cuotas para los filtros actuales.</td></tr>
             )}
             {loading && (
               <tr><td colSpan={5} style={{padding:"1rem"}}>Cargando…</td></tr>
@@ -221,32 +206,54 @@ export default function Cuotas(){
           </tbody>
         </table>
 
-        {/* Paginación */}
+        {/* Paginación simple */}
         <div style={{display:"flex",gap:".5rem",justifyContent:"flex-end",marginTop:".8rem"}}>
-          <button className="secondary" disabled={page<=1} onClick={()=>setPage(p=>p-1)}>Anterior</button>
+          <button className="secondary" disabled={page<=1} onClick={()=>load(page-1)}>Anterior</button>
           <div style={{alignSelf:"center"}}>Página {page} / {totalPages}</div>
-          <button className="secondary" disabled={page>=totalPages} onClick={()=>setPage(p=>p+1)}>Siguiente</button>
+          <button className="secondary" disabled={page>=totalPages} onClick={()=>load(page+1)}>Siguiente</button>
         </div>
       </div>
 
-      {/* Modal Asignar pago */}
+      {/* Modal pago */}
       {openPago && cuotaSel && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.25)",display:"grid",placeItems:"center",zIndex:50}}>
-          <form className="card" onSubmit={guardarPago} style={{minWidth:320,width:"min(520px, 95vw)"}}>
-            <h3 style={{marginTop:0}}>Asignar pago a cuota</h3>
-            <div style={{display:"grid",gap:".6rem",gridTemplateColumns:"1fr 1fr"}}>
+          <form className="card" onSubmit={guardarPago} style={{minWidth:320,width:"min(520px,95vw)"}}>
+            <h3 style={{marginTop:0}}>
+              Asignar pago a cuota #{cuotaSel.numero_cuota} (venta #{cuotaSel.id_venta})
+            </h3>
+
+            {/* Info de saldos */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".6rem",marginBottom:".6rem"}}>
               <div>
-                <label>Fecha pago</label>
-                <input className="input" type="date" value={fechaPago} onChange={e=>setFechaPago(e.target.value)} />
+                <label>Programado</label>
+                <div>Q {Number(cuotaSel.monto_programado).toFixed(2)}</div>
               </div>
               <div>
-                <label>Monto (Q)</label>
-                <input className="input" type="number" step="0.01" value={montoPago} onChange={e=>setMontoPago(e.target.value)} />
+                <label>Saldo pendiente</label>
+                <div><b>Q {Number(cuotaSel.saldo_pendiente ?? (Number(cuotaSel.monto_programado) - Number(cuotaSel.monto_asignado||0))).toFixed(2)}</b></div>
               </div>
             </div>
+
+            {/* Monto a pagar */}
+            <div>
+              <label>Monto (Q)</label>
+              <input
+                className="input"
+                type="number"
+                step="0.01"
+                value={montoPago}
+                onChange={e=>setMontoPago(e.target.value)}
+                disabled={Number(cuotaSel.saldo_pendiente ?? 0) <= 0}
+                style={ Number(cuotaSel.saldo_pendiente ?? 0) <= 0 ? {
+                  background:"#e6f7ed", color:"#166534", borderColor:"#bbf7d0", cursor:"not-allowed"
+                } : undefined }
+                placeholder="0.00"
+              />
+            </div>
+
             <div style={{display:"flex",gap:".6rem",justifyContent:"flex-end",marginTop:"1rem"}}>
-              <button type="button" className="secondary" onClick={()=>setOpenPago(false)} disabled={savingPago}>Cancelar</button>
-              <button type="submit" disabled={savingPago}>{savingPago ? "Guardando..." : "Guardar"}</button>
+              <button type="button" className="secondary" onClick={()=>setOpenPago(false)}>Cancelar</button>
+              <button type="submit">Guardar</button>
             </div>
           </form>
         </div>

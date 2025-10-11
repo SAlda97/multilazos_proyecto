@@ -7,11 +7,11 @@ from django.http import JsonResponse, HttpResponseNotAllowed, Http404
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from .models import Venta, DetalleVenta, Cliente, TipoTransaccion, DimFecha, Producto
+from .utils_cuotas import generar_cuotas_si_faltan, recalcular_montos_cuotas
 
 PLAZOS_VALIDOS = [3, 6, 9, 12, 24, 36, 48]
 
 def _sum_subtotal_venta(id_venta: int) -> Decimal:
-    # la columna 'subtotal' es computada y persistida en SQL; la usamos directo
     with connection.cursor() as cur:
         cur.execute("SELECT ISNULL(SUM(subtotal),0) FROM detalle_ventas WHERE id_venta = %s", [id_venta])
         row = cur.fetchone()
@@ -37,7 +37,7 @@ def _recalcular_total_venta(id_venta: int):
 def ventas_list(request):
     """
     GET  /ventas/?page=&page_size=&search=&id_cliente=&id_tipo_transaccion=
-    POST /ventas/ { id_cliente, id_tipo_transaccion, id_fecha, plazo_mes?, interes? }  (interes/plazo se ajustan automáticamente por reglas)
+    POST /ventas/ { id_cliente, id_tipo_transaccion, id_fecha, plazo_mes?, interes? }
     """
     if request.method == "GET":
         page = int(request.GET.get("page") or 1)
@@ -95,7 +95,6 @@ def ventas_list(request):
         except Exception:
             return JsonResponse({"detail": "id_cliente, id_tipo_transaccion, id_fecha deben ser enteros."}, status=400)
 
-        # validar existencia
         if not Cliente.objects.filter(pk=id_cliente).exists():
             return JsonResponse({"detail": "Cliente inválido."}, status=400)
         try:
@@ -105,7 +104,7 @@ def ventas_list(request):
         if not DimFecha.objects.filter(pk=id_fecha).exists():
             return JsonResponse({"detail": "id_fecha no existe en dim_fecha."}, status=400)
 
-        # reglas de negocio
+        # reglas
         if id_tipo == 1:  # Contado
             plazo_mes = 0
             interes = Decimal('0')
@@ -117,7 +116,6 @@ def ventas_list(request):
                 return JsonResponse({"detail": "plazo_mes es obligatorio para crédito."}, status=400)
             if plazo_mes not in PLAZOS_VALIDOS:
                 return JsonResponse({"detail": f"plazo_mes inválido. Valores: {PLAZOS_VALIDOS}"}, status=400)
-            # interés desde tipo cliente
             cli = Cliente.objects.select_related('id_tipo_cliente').get(pk=id_cliente)
             interes = cli.id_tipo_cliente.tasa_interes_default or 0
             interes = Decimal(interes)
@@ -130,18 +128,16 @@ def ventas_list(request):
                 id_fecha=id_fecha,
                 plazo_mes=plazo_mes,
                 interes=interes,
-                total_venta_final=Decimal('0'),  # se recalcula al tener detalle
+                total_venta_final=Decimal('0'),  # recalculado cuando haya detalle
                 fecha_creacion=timezone.now(),
                 usuario_creacion=getattr(getattr(request, "user", None), "username", None) or "web",
             )
-            # recalcular por si ya hay detalle (normalmente 0 al crear)
-            _recalcular_total_venta(v.id_venta)
+            # IMPORTANTE: al crear la venta todavía no hay detalle; NO generamos cuotas aquí si el total es 0.
+            # Se generarán/actualizarán al agregar el primer detalle (ver endpoints de detalle).
         except IntegrityError as e:
             return JsonResponse({"detail": f"Violación de integridad: {e}"}, status=400)
 
-        return JsonResponse({
-            "id_venta": v.id_venta,
-        }, status=201)
+        return JsonResponse({"id_venta": v.id_venta}, status=201)
 
     return HttpResponseNotAllowed(["GET", "POST"])
 
@@ -213,7 +209,10 @@ def ventas_detail(request, id_venta):
 
         try:
             v.save(update_fields=["id_cliente","id_tipo_transaccion","id_fecha","plazo_mes","interes","fecha_modificacion","usuario_modificacion"])
+            # Si ya tiene detalle, recalcula total y ajusta/genera cuotas
             _recalcular_total_venta(v.id_venta)
+            generar_cuotas_si_faltan(v.id_venta)
+            recalcular_montos_cuotas(v.id_venta)
         except IntegrityError as e:
             return JsonResponse({"detail": f"Violación de integridad: {e}"}, status=400)
 
@@ -227,12 +226,8 @@ def ventas_detail(request, id_venta):
 
 @csrf_exempt
 def ventas_totales_mes(request):
-    """
-    GET /ventas/totales-mes/  -> [{ "mes": "YYYY-MM", "total": "1234.56" }, ...]
-    """
     if request.method != "GET":
         return HttpResponseNotAllowed(["GET"])
-    # agrupa por año-mes usando dim_fecha
     with connection.cursor() as cur:
         cur.execute("""
             SELECT 
@@ -252,11 +247,6 @@ def ventas_totales_mes(request):
 
 @csrf_exempt
 def detalle_ventas_list(request, id_venta: int):
-    """
-    GET  /ventas/<id_venta>/detalle/
-    POST /ventas/<id_venta>/detalle/ { id_producto, cantidad }
-      * precio_unitario y costo_unitario_venta se llenan desde productos
-    """
     try:
         venta = Venta.objects.get(pk=id_venta)
     except Venta.DoesNotExist:
@@ -266,8 +256,6 @@ def detalle_ventas_list(request, id_venta: int):
         qs = DetalleVenta.objects.filter(id_venta=venta).select_related("id_producto").order_by("id_detalle_venta")
         results = []
         for d in qs:
-            # d.subtotal no existe en el modelo; lo calculamos aquí
-            sub_item = (Decimal(d.cantidad) * Decimal(d.precio_unitario)).quantize(Decimal('0.01'))
             results.append({
                 "id_detalle_venta": d.id_detalle_venta,
                 "id_producto": d.id_producto_id,
@@ -275,11 +263,9 @@ def detalle_ventas_list(request, id_venta: int):
                 "cantidad": str(d.cantidad),
                 "precio_unitario": str(d.precio_unitario),
                 "costo_unitario_venta": str(d.costo_unitario_venta),
-                "subtotal": str(sub_item),
+                "subtotal": str(getattr(d, "subtotal", (Decimal(d.cantidad) * Decimal(d.precio_unitario)).quantize(Decimal("0.01")))),
             })
-        # incluir subtotal total de la venta (SQL)
-        total_sub = _sum_subtotal_venta(id_venta)
-        return JsonResponse({"count": qs.count(), "subtotal": str(total_sub), "results": results})
+        return JsonResponse({"count": qs.count(), "results": results})
 
     if request.method == "POST":
         try:
@@ -290,7 +276,6 @@ def detalle_ventas_list(request, id_venta: int):
         id_producto = payload.get("id_producto")
         cantidad = payload.get("cantidad", 0)
 
-        # Validaciones mínimas
         try:
             prod = Producto.objects.get(pk=int(id_producto))
         except Exception:
@@ -303,7 +288,6 @@ def detalle_ventas_list(request, id_venta: int):
         except Exception:
             return JsonResponse({"detail": "La cantidad debe ser > 0."}, status=400)
 
-        # Tomar precios/costos desde el producto (no confiar en el front)
         precio = Decimal(str(prod.precio_unitario))
         costo  = Decimal(str(prod.costo_unitario))
 
@@ -317,15 +301,12 @@ def detalle_ventas_list(request, id_venta: int):
                 fecha_creacion=timezone.now(),
                 usuario_creacion=getattr(getattr(request, "user", None), "username", None) or "web",
             )
-            # Recalcular total de la venta tras crear ítem
+            # >>> Recalcular total y cuotas
             _recalcular_total_venta(venta.id_venta)
+            generar_cuotas_si_faltan(venta.id_venta)
+            recalcular_montos_cuotas(venta.id_venta)
         except IntegrityError as e:
-            msg = (str(e) or "").lower()
-            if "unique" in msg or "uq_" in msg or "duplic" in msg:
-                return JsonResponse({"detail": "Este producto ya existe en la venta."}, status=400)
-            return JsonResponse({"detail": f"Violación de integridad: {str(e)}"}, status=400)
-        except Exception as e:
-            return JsonResponse({"detail": f"Error al crear ítem: {str(e)}"}, status=400)
+            return JsonResponse({"detail": "Violación de integridad: " + str(e)}, status=400)
 
         return JsonResponse({
             "id_detalle_venta": det.id_detalle_venta,
@@ -334,7 +315,7 @@ def detalle_ventas_list(request, id_venta: int):
             "cantidad": str(det.cantidad),
             "precio_unitario": str(det.precio_unitario),
             "costo_unitario_venta": str(det.costo_unitario_venta),
-            "subtotal": str((Decimal(det.cantidad) * Decimal(det.precio_unitario)).quantize(Decimal("0.01"))),
+            "subtotal": str((det.cantidad * det.precio_unitario).quantize(Decimal("0.01"))),
         }, status=201)
 
     return HttpResponseNotAllowed(["GET", "POST"])
@@ -357,12 +338,18 @@ def detalle_venta_detail(request, id_venta, id_detalle):
         d.cantidad = cantidad
         d.fecha_modificacion = timezone.now()
         d.save(update_fields=["cantidad","fecha_modificacion"])
+        # >>> Recalcular total y cuotas
         _recalcular_total_venta(id_venta)
+        generar_cuotas_si_faltan(id_venta)
+        recalcular_montos_cuotas(id_venta)
         return JsonResponse({"detail": "Actualizado"})
 
     if request.method == "DELETE":
         d.delete()
+        # >>> Recalcular total y cuotas
         _recalcular_total_venta(id_venta)
+        generar_cuotas_si_faltan(id_venta)
+        recalcular_montos_cuotas(id_venta)
         return JsonResponse({"detail": "Eliminado"})
 
     return HttpResponseNotAllowed(["PUT","DELETE"])

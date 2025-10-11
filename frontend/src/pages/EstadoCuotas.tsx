@@ -1,124 +1,187 @@
+// src/pages/EstadoCuotas.tsx
 import { useEffect, useMemo, useState } from "react";
-import { CuotasStore } from "./pagos/_cuotasStore";
-import { PagosStore, VentaRef } from "./pagos/_pagosStore";
+import { useNavigate } from "react-router-dom";
+import { listEstadoCuotas } from "../services/estadoCuotas";
+import { asignarPagoCuota } from "../services/cuotas";
+import type { EstadoCuota } from "../types/estadoCuotas";
+import { fmtQ, fmt2 } from "../utils/format";
+
+// PDF
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 type Filtros = {
-  q: string; // busca por cliente, #venta, #cuota
-  estado: "Todos" | "pendiente" | "parcial" | "pagada";
-  desde?: string; // yyyy-mm-dd (vencimiento)
+  q: string;
+  estado: "Todos" | "pendiente" | "parcial" | "pagada" | "atrasada";
+  desde?: string;
   hasta?: string;
-  venta?: string; // id venta como texto para no validar (UI)
+  venta?: string;
 };
 
-type Row = {
-  id_cuota: number;
-  id_venta: number;
-  numero_cuota: number;
-  fecha_venc_iso: string;
-  monto_programado: number;
-  monto_pagado: number;
-  saldo_pendiente: number;
-  estado: "pendiente" | "parcial" | "pagada";
-  cliente?: string;
-  tipo?: "Contado" | "Crédito";
-};
-
-export default function EstadoCuotas() {
-  // Carga "DB" desde localStorage de los stores existentes
-  const [cuotasDb, setCuotasDb] = useState(CuotasStore.getAll());
-  const [ventasDb, setVentasDb] = useState(PagosStore.getAll().ventas);
+export default function EstadoCuotas(){
+  const navigate = useNavigate();
 
   const [f, setF] = useState<Filtros>({ q: "", estado: "Todos" });
+  const [rows, setRows] = useState<EstadoCuota[]>([]);
+  const [allRows, setAllRows] = useState<EstadoCuota[]>([]);
+  const [count, setCount] = useState(0);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(count/pageSize));
+  const [loading, setLoading] = useState(false);
+  
 
-  // refrescar cuando regresas desde otros módulos/modales
-  useEffect(() => {
-    setCuotasDb(CuotasStore.getAll());
-    setVentasDb(PagosStore.getAll().ventas);
-  }, []);
+  // Modal pago
+  const [openPago, setOpenPago] = useState(false);
+  const [cuotaSel, setCuotaSel] = useState<EstadoCuota|null>(null);
+  const [montoPago, setMontoPago] = useState("");
 
-  const pagosPorCuota = useMemo(() => {
-    const map = new Map<number, number>();
-    for (const a of cuotasDb.pago_cuota) {
-      map.set(a.id_cuota, (map.get(a.id_cuota) || 0) + a.monto_asignado);
-    }
-    return map;
-  }, [cuotasDb]);
-
-  const ventasMap = useMemo(
-    () => new Map<number, VentaRef>(ventasDb.map(v => [v.id_venta, v])),
-    [ventasDb]
-  );
-
-  // Construye las filas estilo v_cuotas_estado
-  const base: Row[] = useMemo(() => {
-    return cuotasDb.cuotas.map(c => {
-      const pagado = pagosPorCuota.get(c.id_cuota) || 0;
-      const saldo = Number((c.monto_programado - pagado).toFixed(2));
-      const estado: Row["estado"] =
-        pagado === 0 ? "pendiente" : (pagado < c.monto_programado ? "parcial" : "pagada");
-      const venta = ventasMap.get(c.id_venta);
-      return {
-        id_cuota: c.id_cuota,
-        id_venta: c.id_venta,
-        numero_cuota: c.numero_cuota,
-        fecha_venc_iso: c.fecha_venc_iso,
-        monto_programado: c.monto_programado,
-        monto_pagado: Number(pagado.toFixed(2)),
-        saldo_pendiente: saldo,
-        estado,
-        cliente: venta?.cliente,
-        tipo: venta?.tipo_transaccion,
+  async function load(p = page) {
+    setLoading(true);
+    try {
+      // mismos filtros para ambas consultas
+      const commonParams = {
+        search: f.q || undefined,
+        desde: f.desde || undefined,
+        hasta: f.hasta || undefined,
+        id_venta: f.venta || undefined,
+        estado: f.estado !== "Todos" ? f.estado : undefined,
       };
-    });
-  }, [cuotasDb, pagosPorCuota, ventasMap]);
 
-  // Filtros UI
-  const rows = base.filter(r => {
-    const texto = [
-      r.id_cuota, r.id_venta, r.numero_cuota,
-      r.cliente ?? "", r.tipo ?? "", r.estado
-    ].join(" ").toLowerCase();
+      // 1) Page actual (paginada)
+      // 2) Todas las filas filtradas (para totales), sin paginar
+      const [pageRes, fullRes] = await Promise.all([
+        listEstadoCuotas({ ...commonParams, page: p, page_size: pageSize }),
+        listEstadoCuotas({ ...commonParams, page: 1, page_size: 10000000 }) // << solo para totales
+      ]);
 
-    if (f.q && !texto.includes(f.q.toLowerCase())) return false;
-    if (f.estado !== "Todos" && r.estado !== f.estado) return false;
-
-    if (f.venta && String(r.id_venta) !== String(f.venta)) return false;
-
-    if (f.desde && r.fecha_venc_iso < f.desde) return false;
-    if (f.hasta && r.fecha_venc_iso > f.hasta) return false;
-
-    return true;
-  });
-
-  // Totales
-  const totales = useMemo(() => {
-    const porEstado = rows.reduce(
-      (acc, r) => {
-        acc[r.estado] = (acc[r.estado] || 0) + 1;
-        return acc;
-      },
-      {} as Record<Row["estado"], number>
-    );
-    const sumaSaldo = rows.reduce((acc, r) => acc + r.saldo_pendiente, 0);
-    const sumaProgramado = rows.reduce((acc, r) => acc + r.monto_programado, 0);
-    const sumaPagado = rows.reduce((acc, r) => acc + r.monto_pagado, 0);
-    return {
-      registros: rows.length,
-      porEstado,
-      sumaSaldo: Number(sumaSaldo.toFixed(2)),
-      sumaProgramado: Number(sumaProgramado.toFixed(2)),
-      sumaPagado: Number(sumaPagado.toFixed(2)),
-    };
-  }, [rows]);
-
-  function limpiar() {
-    setF({ q: "", estado: "Todos" });
+      setRows(pageRes.results);
+      setCount(pageRes.count);
+      setAllRows(fullRes.results); // << aquí guardamos TODO lo filtrado
+      setPage(p);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  function Chip({ s }: { s: Row["estado"] }) {
+  useEffect(()=>{ load(1); }, []); // init
+  useEffect(()=>{ load(1); }, [f.q, f.estado, f.desde, f.hasta, f.venta]); // refiltrar
+
+  function limpiar(){ setF({ q:"", estado:"Todos" }); setPage(1); }
+
+  function exportPDF(){
+    if(!confirm("¿Exportar estado de cuotas a PDF?")) return;
+    const doc = new jsPDF({ unit:"pt", format:"a4" });
+    doc.setFont("helvetica","bold"); doc.setFontSize(14);
+    doc.text(`Estado de cuotas (total: ${count})`, 40, 40);
+
+    const filtros = [
+      f.q ? `Buscar="${f.q}"` : null,
+      f.estado!=="Todos" ? `Estado=${f.estado}` : null,
+      f.desde ? `Desde=${f.desde}` : null,
+      f.hasta ? `Hasta=${f.hasta}` : null,
+      f.venta ? `#Venta=${f.venta}` : null,
+    ].filter(Boolean).join(" • ");
+    doc.setFont("helvetica","normal"); doc.setFontSize(10);
+    if(filtros) doc.text(filtros, 40, 58);
+
+    autoTable(doc, {
+      startY: 70,
+      head: [["#Cuota","#Venta","Cliente","Vence","Programado","Pagado","Saldo","Estado"]],
+      body: rows.map(r=>[
+        `#${r.id_cuota} (#${r.numero_cuota})`,
+        `#${r.id_venta}`,
+        r.cliente,
+        r.fecha_venc_iso,
+        Number(r.monto_programado).toFixed(2),
+        Number(r.monto_pagado).toFixed(2),
+        Number(r.saldo_pendiente).toFixed(2),
+        r.estado
+      ]),
+      styles:{ fontSize:9 },
+      headStyles:{ fillColor:[42,106,195] },
+      theme:"striped",
+      margin:{ left:40, right:40 },
+      columnStyles:{
+        0:{cellWidth:90}, 1:{cellWidth:70}, 2:{cellWidth:140}, 3:{cellWidth:90},
+        4:{cellWidth:80}, 5:{cellWidth:80}, 6:{cellWidth:80}, 7:{cellWidth:70}
+      },
+      didDrawPage: data=>{
+        const s = doc.internal.pageSize;
+        doc.setFontSize(8); doc.setTextColor(120);
+        doc.text("Exportado desde Multilazos", 40, s.height-24);
+        doc.text(`Página ${doc.getCurrentPageInfo().pageNumber}`, s.width-80, s.height-24);
+      }
+    });
+    doc.save("estado_cuotas.pdf");
+  }
+
+  function abrirPago(r: EstadoCuota){
+    setCuotaSel(r);
+    setMontoPago("");
+    setOpenPago(true);
+  }
+
+  async function guardarPago(e: React.FormEvent){
+    e.preventDefault();
+    const monto = Number(montoPago||0);
+    if(!(monto>0)){ alert("Monto > 0"); return; }
+    if(Number(cuotaSel?.saldo_pendiente || 0) <= 0){
+      alert("La cuota no tiene saldo pendiente."); return;
+    }
+    if(monto > Number(cuotaSel?.saldo_pendiente || 0)){
+      alert("El monto excede el saldo de la cuota."); return;
+    }
+    if(!confirm("¿Confirmar asignación del pago a esta cuota?")) return;
+
+    try{
+      await asignarPagoCuota({ id_cuota: cuotaSel!.id_cuota, monto_pago: monto });
+      setOpenPago(false);
+      await load(page);
+    }catch(err:any){
+      alert(err?.response?.data?.detail || err?.message || "Error al asignar el pago.");
+    }
+  }
+
+  // Totales + participación %
+  const totales = useMemo(() => {
+    const dataset = allRows; // <- fuente global filtrada
+    const regs = dataset.length;
+
+    const sumaProgramado = dataset.reduce((acc, r) => acc + Number(r.monto_programado || 0), 0);
+    const sumaPagado    = dataset.reduce((acc, r) => acc + Number(r.monto_pagado || 0), 0);
+    const sumaSaldo     = dataset.reduce((acc, r) => acc + Number(r.saldo_pendiente || 0), 0);
+
+    const porEstado = dataset.reduce((acc, r) => {
+      (acc as any)[r.estado] = ((acc as any)[r.estado] || 0) + 1;
+      return acc;
+    }, {} as Record<EstadoCuota["estado"], number>);
+
+    // participación % respecto a la suma (programado+pagado+saldo) del conjunto filtrado
+    const totalAbs = (sumaProgramado + sumaPagado + sumaSaldo) || 1;
+    const pct = (v: number) => (totalAbs > 0 ? (v * 100) / totalAbs : 0);
+
+    return {
+      registros: regs,
+      porEstado,
+      sumaProgramado,
+      sumaPagado,
+      sumaSaldo,
+      pctProgramado: pct(sumaProgramado),
+      pctPagado: pct(sumaPagado),
+      pctSaldo: pct(sumaSaldo),
+    };
+  }, [allRows]);
+
+  function Chip({ s }: { s: EstadoCuota["estado"] }) {
     const color =
-      s === "pagada" ? "#16a34a" : s === "parcial" ? "#f59e0b" : "#ef4444";
-    const bg = s === "pagada" ? "#dcfce7" : s === "parcial" ? "#fef3c7" : "#fee2e2";
+      s === "pagada"   ? "#16a34a" :
+      s === "parcial"  ? "#f59e0b" :
+      s === "atrasada" ? "#ef4444" : "#ef4444";
+    const bg =
+      s === "pagada"   ? "#dcfce7" :
+      s === "parcial"  ? "#fef3c7" :
+      s === "atrasada" ? "#fee2e2" : "#fee2e2";
     return (
       <span style={{
         fontSize: 12, padding: ".15rem .5rem", borderRadius: 999,
@@ -130,49 +193,71 @@ export default function EstadoCuotas() {
   }
 
   return (
-    <div style={{ display: "grid", gap: "1rem" }}>
+    <div style={{ display:"grid", gap:"1rem" }}>
       {/* Filtros */}
-      <div className="card" style={{ display: "grid", gap: ".6rem" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 140px 140px 160px", gap: ".6rem" }}>
+      <div className="card" style={{ display:"grid", gap:".6rem" }}>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 160px 140px 140px 160px", gap:".6rem" }}>
           <input
             className="input"
             placeholder="Buscar (cliente, #venta, #cuota)…"
             value={f.q}
-            onChange={(e) => setF({ ...f, q: e.target.value })}
+            onChange={e=>setF({...f, q:e.target.value})}
           />
           <select
             className="select"
             value={f.estado}
-            onChange={(e) => setF({ ...f, estado: e.target.value as Filtros["estado"] })}
+            onChange={e=>setF({...f, estado: e.target.value as Filtros["estado"]})}
           >
             <option value="Todos">Todos</option>
             <option value="pendiente">Pendiente</option>
             <option value="parcial">Parcial</option>
             <option value="pagada">Pagada</option>
+            <option value="atrasada">Atrasada</option>
           </select>
           <input className="input" type="date" value={f.desde ?? ""} onChange={e=>setF({...f, desde:e.target.value||undefined})}/>
           <input className="input" type="date" value={f.hasta ?? ""} onChange={e=>setF({...f, hasta:e.target.value||undefined})}/>
           <input className="input" placeholder="# Venta" value={f.venta ?? ""} onChange={e=>setF({...f, venta:e.target.value||undefined})}/>
         </div>
-        <div style={{ display: "flex", gap: ".6rem", justifyContent: "flex-end" }}>
-          <button className="secondary" onClick={limpiar}>Limpiar</button>
-          <button className="secondary">Exportar CSV (UI)</button>
-          <button className="secondary">Imprimir (UI)</button>
+        <div style={{ display:"flex", gap:".6rem", justifyContent:"flex-end" }}>
+          <button className="secondary" onClick={limpiar} disabled={loading}>Limpiar</button>
+          <button className="secondary" onClick={exportPDF} disabled={loading}>Exportar PDF</button>
         </div>
       </div>
 
-      {/* Totales / badges */}
-      <div className="card" style={{ display: "flex", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
-        <b>Estado de cuotas</b>
-        <span style={{ opacity: .8 }}>Registros: <b>{totales.registros}</b></span>
-        <span className="badge">Pendientes: {totales.porEstado?.pendiente ?? 0}</span>
-        <span className="badge">Parciales: {totales.porEstado?.parcial ?? 0}</span>
-        <span className="badge">Pagadas: {totales.porEstado?.pagada ?? 0}</span>
-        <span style={{ marginLeft: "auto", opacity: .8 }}>
-          Programado: <b>Q {totales.sumaProgramado.toFixed(2)}</b>
-          &nbsp;•&nbsp; Pagado: <b>Q {totales.sumaPagado.toFixed(2)}</b>
-          &nbsp;•&nbsp; Saldo: <b>Q {totales.sumaSaldo.toFixed(2)}</b>
-        </span>
+      {/* Totales con % */}
+      <div className="card" style={{ display:"grid", gap:".4rem" }}>
+        <div style={{ display:"flex", gap:"1rem", alignItems:"center", flexWrap:"wrap" }}>
+          <b>Estado de cuotas</b>
+          <span style={{ opacity:.8 }}>
+            Registros: <b>{totales.registros}</b>
+            <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>100%</div>
+          </span>
+          <span className="badge">Pendientes: {totales.porEstado?.pendiente ?? 0}</span>
+          <span className="badge">Parciales: {totales.porEstado?.parcial ?? 0}</span>
+          <span className="badge">Atrasadas: {totales.porEstado?.atrasada ?? 0}</span>
+          <span className="badge">Pagadas: {totales.porEstado?.pagada ?? 0}</span>
+
+          <div style={{ marginLeft:"auto", display:"flex", gap:"1.2rem", flexWrap:"wrap" }}>
+            <div>
+              Total cartera(Programado) : <b>{fmtQ(totales.sumaProgramado)}</b>
+              <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>
+                {totales.pctProgramado.toFixed(1)}%
+              </div>
+            </div>
+            <div>
+              Pagado: <b>{fmtQ(totales.sumaPagado)}</b>
+              <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>
+                {totales.pctPagado.toFixed(1)}%
+              </div>
+            </div>
+            <div>
+              Saldo: <b>{fmtQ(totales.sumaSaldo)}</b>
+              <div style={{ fontSize:12, opacity:.8, marginTop:2 }}>
+                {totales.pctSaldo.toFixed(1)}%
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Tabla */}
@@ -184,44 +269,104 @@ export default function EstadoCuotas() {
               <th style={{width:120}}>#Venta</th>
               <th>Cliente</th>
               <th style={{width:110}}>Vence</th>
-              <th style={{width:120, textAlign:"right"}}>Programado (Q)</th>
-              <th style={{width:120, textAlign:"right"}}>Pagado (Q)</th>
-              <th style={{width:120, textAlign:"right"}}>Saldo (Q)</th>
+              <th style={{width:120, textAlign:"right"}}>Programado</th>
+              <th style={{width:120, textAlign:"right"}}>Pagado</th>
+              <th style={{width:120, textAlign:"right"}}>Saldo</th>
               <th style={{width:120}}>Estado</th>
-              <th style={{width:140}}></th>
+              <th style={{width:200}}></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => (
+            {rows.map(r=>(
               <tr key={r.id_cuota}>
                 <td>#{r.id_cuota} (#{r.numero_cuota})</td>
                 <td>#{r.id_venta}</td>
-                <td>{r.cliente ?? "—"}</td>
+                <td>{r.cliente}</td>
                 <td>{r.fecha_venc_iso}</td>
-                <td style={{textAlign:"right"}}>Q {r.monto_programado.toFixed(2)}</td>
-                <td style={{textAlign:"right"}}>Q {r.monto_pagado.toFixed(2)}</td>
-                <td style={{textAlign:"right"}}><b>Q {r.saldo_pendiente.toFixed(2)}</b></td>
+                <td style={{textAlign:"right"}}>{fmtQ(r.monto_programado)}</td>
+                <td style={{textAlign:"right"}}>{fmtQ(r.monto_pagado)}</td>
+                <td style={{textAlign:"right"}}><b>{fmtQ(r.saldo_pendiente)}</b></td>
                 <td><Chip s={r.estado} /></td>
                 <td style={{display:"flex", gap:".4rem"}}>
-                  <button className="secondary" title="UI: ir a Pagos/Asignación">Asignar pago</button>
-                  <button className="secondary" title="UI: ver venta">Ver venta</button>
+                  <button
+                    className="secondary"
+                    onClick={() => navigate(`/ventas/${r.id_venta}/detalle`)}
+                    title="Ver detalle de la venta"
+                  >
+                    Ventas
+                  </button>
+                  <button
+                    onClick={()=>abrirPago(r)}
+                    disabled={Number(r.saldo_pendiente) <= 0}
+                    title={Number(r.saldo_pendiente) <= 0 ? "La cuota ya no tiene saldo" : "Asignar pago a esta cuota"}
+                    style={ Number(r.saldo_pendiente) <= 0 ? {
+                      background:"#e6f7ed", color:"#166534", borderColor:"#bbf7d0", cursor:"not-allowed"
+                    } : undefined}
+                  >
+                    Asignar pago
+                  </button>
                 </td>
               </tr>
             ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={9} style={{ padding: "1rem" }}>Sin cuotas para los filtros actuales (UI).</td>
-              </tr>
+            {rows.length===0 && !loading && (
+              <tr><td colSpan={9} style={{padding:"1rem"}}>Sin cuotas para los filtros actuales.</td></tr>
+            )}
+            {loading && (
+              <tr><td colSpan={9} style={{padding:"1rem"}}>Cargando…</td></tr>
             )}
           </tbody>
         </table>
+
+        {/* Paginación */}
+        <div style={{display:"flex",gap:".5rem",justifyContent:"flex-end",marginTop:".8rem"}}>
+          <button className="secondary" disabled={page<=1} onClick={()=>load(page-1)}>Anterior</button>
+          <div style={{alignSelf:"center"}}>Página {page} / {totalPages}</div>
+          <button className="secondary" disabled={page>=totalPages} onClick={()=>load(page+1)}>Siguiente</button>
+        </div>
       </div>
 
-      {/* Notas UI */}
-      <div className="card" style={{ display:"flex", gap:".6rem", flexWrap:"wrap" }}>
-        <span className="badge secondary">Cálculo UI con stores locales (sin backend).</span>
-        <span className="badge">Con backend: se consultará `v_cuotas_estado` en SQL Server.</span>
-      </div>
+      {/* Modal pago */}
+      {openPago && cuotaSel && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.25)",display:"grid",placeItems:"center",zIndex:50}}>
+          <form className="card" onSubmit={guardarPago} style={{minWidth:320,width:"min(520px,95vw)"}}>
+            <h3 style={{marginTop:0}}>
+              Asignar pago a cuota #{cuotaSel.numero_cuota} (venta #{cuotaSel.id_venta})
+            </h3>
+
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".6rem",marginBottom:".6rem"}}>
+              <div>
+                <label>Programado</label>
+                <div>Q {Number(cuotaSel.monto_programado).toFixed(2)}</div>
+              </div>
+              <div>
+                <label>Saldo pendiente</label>
+                <div><b>Q {Number(cuotaSel.saldo_pendiente).toFixed(2)}</b></div>
+              </div>
+            </div>
+
+            <div>
+              <label>Monto (Q)</label>
+              <input
+                className="input"
+                type="number"
+                step="0.01"
+                value={montoPago}
+                onChange={e=>setMontoPago(e.target.value)}
+                disabled={Number(cuotaSel.saldo_pendiente) <= 0}
+                style={ Number(cuotaSel.saldo_pendiente) <= 0 ? {
+                  background:"#e6f7ed", color:"#166534", borderColor:"#bbf7d0", cursor:"not-allowed"
+                } : undefined }
+                placeholder="0.00"
+              />
+            </div>
+
+            <div style={{display:"flex",gap:".6rem",justifyContent:"flex-end",marginTop:"1rem"}}>
+              <button type="button" className="secondary" onClick={()=>setOpenPago(false)}>Cancelar</button>
+              <button type="submit">Guardar</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

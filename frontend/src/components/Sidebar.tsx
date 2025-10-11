@@ -10,7 +10,7 @@ const SECTIONS: Section[] = [
     id: "analisis",
     title: "Análisis",
     items: [
-      { to: "/dashboard", label: "Dashboard" },
+
       { to: "/rentabilidades", label: "Rentabilidades" },
     ],
   },

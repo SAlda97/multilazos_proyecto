@@ -1,224 +1,268 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Chart as ChartJS, CategoryScale, LinearScale, BarElement, PointElement, LineElement,
-  Tooltip, Legend
+  Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend
 } from "chart.js";
-import { Bar, Line } from "react-chartjs-2";
+import { Line, Pie } from "react-chartjs-2";
+import { getRentabilidades } from "../services/rentabilidades";
+import type { SerieMes } from "../types/rentabilidades";
+import { fmtQ, fmt2 } from "../utils/format";
+import { exportChartsToPDF } from "../utils/exportCharts"; //  NUEVO
+
+// PDF (se mantienen por si más adelante se quiere exportar tablas también)
 
 
-
-ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend);
 
 type Filtros = {
-  desde: string; hasta: string;
-  idTipoCliente: number | 0;
-  idTipoTransaccion: number | 0;
-  idCategoriaProducto: number | 0;
+  months: number;                 // últimos N meses
+  idTipoTransaccion: 0 | 1 | 2;   // 0=Todas,1=Contado,2=Crédito
 };
-
-// Estructura alineada a vw_resumen_rentabilidades / fn_resumen_mensual
-type Fila = {
-  anio: number;
-  mes: number;                  // 1..12
-  mes_inicio: string;           // yyyy-mm-01 (para eje)
-  id_tipo_cliente: number | null;
-  nombre_tipo_cliente: string;
-  id_tipo_transaccion: number | null;
-  nombre_tipo_transaccion: string;
-  id_categoria_producto: number | null;
-  nombre_categoria_producto: string;
-  total_venta: number;
-  total_costo: number;
-  margen_bruto: number;
-  gastos_asignados: number;
-  margen_neto: number;
-  dso_dias_prom: number | null;
-};
-
-// Catálogos mínimos de UI (se reemplazarán por backend)
-const catTiposCliente = [
-  { id: 1, nombre: "Mayorista" },
-  { id: 2, nombre: "Minorista" },
-];
-const catTiposTrans = [
-  { id: 1, nombre: "Contado" },
-  { id: 2, nombre: "Crédito" },
-];
-const catCategorias = [
-  { id: 1, nombre: "Lazos de nylon" },
-  { id: 2, nombre: "Lazos de algodón" },
-  { id: 3, nombre: "Accesorios" },
-];
-
-// Datos simulados (3 meses)
-const seed: Fila[] = [
-  { anio:2025, mes:6, mes_inicio:"2025-06-01", id_tipo_cliente:1, nombre_tipo_cliente:"Mayorista", id_tipo_transaccion:1, nombre_tipo_transaccion:"Contado", id_categoria_producto:1, nombre_categoria_producto:"Lazos de nylon", total_venta:120000, total_costo:90000, margen_bruto:30000, gastos_asignados:7000, margen_neto:23000, dso_dias_prom:0 },
-  { anio:2025, mes:6, mes_inicio:"2025-06-01", id_tipo_cliente:2, nombre_tipo_cliente:"Minorista", id_tipo_transaccion:2, nombre_tipo_transaccion:"Crédito", id_categoria_producto:2, nombre_categoria_producto:"Lazos de algodón", total_venta:80000, total_costo:56000, margen_bruto:24000, gastos_asignados:5000, margen_neto:19000, dso_dias_prom:28 },
-  { anio:2025, mes:7, mes_inicio:"2025-07-01", id_tipo_cliente:1, nombre_tipo_cliente:"Mayorista", id_tipo_transaccion:1, nombre_tipo_transaccion:"Contado", id_categoria_producto:1, nombre_categoria_producto:"Lazos de nylon", total_venta:100000, total_costo:76000, margen_bruto:24000, gastos_asignados:6000, margen_neto:18000, dso_dias_prom:0 },
-  { anio:2025, mes:7, mes_inicio:"2025-07-01", id_tipo_cliente:2, nombre_tipo_cliente:"Minorista", id_tipo_transaccion:2, nombre_tipo_transaccion:"Crédito", id_categoria_producto:2, nombre_categoria_producto:"Lazos de algodón", total_venta:95000, total_costo:68000, margen_bruto:27000, gastos_asignados:5500, margen_neto:21500, dso_dias_prom:30 },
-  { anio:2025, mes:8, mes_inicio:"2025-08-01", id_tipo_cliente:1, nombre_tipo_cliente:"Mayorista", id_tipo_transaccion:2, nombre_tipo_transaccion:"Crédito", id_categoria_producto:3, nombre_categoria_producto:"Accesorios", total_venta:60000, total_costo:42000, margen_bruto:18000, gastos_asignados:4000, margen_neto:14000, dso_dias_prom:25 },
-];
 
 export default function Rentabilidades(){
-  const hoy = new Date();
-  const yyyy = hoy.getFullYear(); const mm = String(hoy.getMonth()+1).padStart(2,"0");
-  const defHasta = `${yyyy}-${mm}-01`;
-  const defDesde = "2025-06-01";
+  const [f, setF] = useState<Filtros>({ months: 6, idTipoTransaccion: 0 });
+  const [labels, setLabels] = useState<string[]>([]);
+  const [series, setSeries] = useState<SerieMes[]>([]);
+  const [tot, setTot] = useState({ venta:0, costo:0, margen_bruto:0, gastos:0, margen_neto:0 });
+  const [pie, setPie] = useState({ contado:0, credito:0 });
+  const [loading, setLoading] = useState(false);
 
-  const [filtros, setFiltros] = useState<Filtros>({
-    desde: defDesde,
-    hasta: defHasta,
-    idTipoCliente: 0,
-    idTipoTransaccion: 0,
-    idCategoriaProducto: 0
-  });
+  // ⬇️ Refs a las gráficas
+  const lineAbsRef   = useRef<any>(null); // G1
+  const lineMBMNRef  = useRef<any>(null); // G2
+  const linePctRef   = useRef<any>(null); // G3
+  const lineGVRef    = useRef<any>(null); // G4
+  const pieRef       = useRef<any>(null); // G5
 
-  const filtrado = useMemo(()=>{
-    return seed.filter(r=>{
-      const okDesde = !filtros.desde || r.mes_inicio >= filtros.desde;
-      const okHasta = !filtros.hasta || r.mes_inicio <= filtros.hasta;
-      const okTC = !filtros.idTipoCliente || r.id_tipo_cliente === filtros.idTipoCliente;
-      const okTT = !filtros.idTipoTransaccion || r.id_tipo_transaccion === filtros.idTipoTransaccion;
-      const okCP = !filtros.idCategoriaProducto || r.id_categoria_producto === filtros.idCategoriaProducto;
-      return okDesde && okHasta && okTC && okTT && okCP;
-    });
-  }, [filtros]);
-
-  // Agregados para KPIs / tabla
-  const resumen = useMemo(()=>{
-    let venta=0, costo=0, margenB=0, gastos=0, margenN=0;
-    filtrado.forEach(r=>{
-      venta+=r.total_venta; costo+=r.total_costo; margenB+=r.margen_bruto; gastos+=r.gastos_asignados; margenN+=r.margen_neto;
-    });
-    return { venta, costo, margenB, gastos, margenN };
-  }, [filtrado]);
-
-  // Eje por mes (yyyy-mm)
-  const etiquetasMes = Array.from(new Set(filtrado.map(r=>r.mes_inicio)));
-
-  // Series por mes (ventas y margen neto)
-  const ventasPorMes = etiquetasMes.map(m => filtrado.filter(r=>r.mes_inicio===m).reduce((a,b)=>a+b.total_venta,0));
-  const margenNetoPorMes = etiquetasMes.map(m => filtrado.filter(r=>r.mes_inicio===m).reduce((a,b)=>a+b.margen_neto,0));
-
-  // DSO promedio por mes
-  const dsoPorMes = etiquetasMes.map(m=>{
-    const arr = filtrado.filter(r=>r.mes_inicio===m && r.dso_dias_prom!=null).map(r=>r.dso_dias_prom as number);
-    if(!arr.length) return 0;
-    return +(arr.reduce((a,b)=>a+b,0)/arr.length).toFixed(1);
-  });
+  async function load(){
+    setLoading(true);
+    try{
+      const res = await getRentabilidades({ months: f.months, id_tipo_transaccion: f.idTipoTransaccion });
+      setLabels(res.labels || []);
+      setSeries(res.series || []);
+      setTot(res.totales || { venta:0,costo:0,margen_bruto:0,gastos:0,margen_neto:0 });
+      setPie(res.ventas_por_tipo || { contado:0, credito:0 });
+    }finally{
+      setLoading(false);
+    }
+  }
+  useEffect(()=>{ load(); }, []); // init
+  useEffect(()=>{ load(); }, [f.months, f.idTipoTransaccion]); // vivo ante filtros
 
   function limpiar(){
-    setFiltros({desde:defDesde, hasta:defHasta, idTipoCliente:0, idTipoTransaccion:0, idCategoriaProducto:0});
+    setF({ months: 6, idTipoTransaccion: 0 });
   }
+
+  // Helper: redondear a 2 decimales (número)
+  const r2 = (x:number)=> Number((x ?? 0).toFixed(2));
+
+  // KPIs absolutos (respetan filtros)
+  const kpis = useMemo(()=>({
+    venta: tot.venta,
+    costo: tot.costo,
+    margenB: tot.margen_bruto,
+    gastos: tot.gastos,
+    margenN: tot.margen_neto
+  }), [tot]);
+
+  // Series (absolutos)
+  const ventasLine       = series.map(s => s.venta);
+  const margenBLine      = series.map(s => s.margen_bruto);
+  const margenNLine      = series.map(s => s.margen_neto);
+
+  // Series (%): redondeadas a 2 decimales para evitar etiquetas largas
+  const margenBPctLine     = series.map(s => r2(s.margen_bruto_pct));
+  const margenNPctLine     = series.map(s => r2(s.margen_neto_pct));
+  const gastosVentaPctLine = series.map(s => r2(s.gastos_sobre_venta_pct));
+
+  // Pie ventas contado/credito (en la ventana de meses)
+  const pieData = {
+    labels: ["Contado", "Crédito"],
+    datasets: [{ data: [pie.contado, pie.credito] }]
+  };
+
+  // ⬇️ Exportar PDF con las GRÁFICAS como imágenes
+  async function exportPDF(){
+    if(!confirm("¿Desea exportar las gráficas a PDF?")) return;
+
+    // React-chartjs-2 expone el chart con ref.current
+    // toBase64Image(): retorna dataURL PNG del canvas
+    const tryImg = (ref: any) => {
+      const inst = ref?.current;
+      if (!inst) return null;
+      // Compatibilidad: algunos wrappers cuelgan la instancia en ref.current
+      // como { canvas, toBase64Image, ... } o en ref.current?.canvas
+      const fn = inst.toBase64Image ? inst.toBase64Image.bind(inst) : null;
+      return fn ? fn("image/png", 1.0) : null;
+    };
+
+    const imgs = [
+      { title: "Tendencia: Ventas, Margen bruto y Margen neto", dataUrl: tryImg(lineAbsRef) },
+      { title: "Tendencia: Margen bruto vs Margen neto (Q)",     dataUrl: tryImg(lineMBMNRef) },
+      { title: "Tendencia: % Margen bruto y % Margen neto",      dataUrl: tryImg(linePctRef) },
+      { title: "Tendencia: % Gastos sobre ventas",               dataUrl: tryImg(lineGVRef) },
+      { title: "Ventas por tipo de transacción",                 dataUrl: tryImg(pieRef) },
+    ].filter(x => !!x.dataUrl) as {title:string; dataUrl:string}[];
+
+    const subtitle = [
+      `Últimos ${f.months} meses`,
+      f.idTipoTransaccion===0 ? "Transacción: Todas" : (f.idTipoTransaccion===1 ? "Transacción: Contado" : "Transacción: Crédito")
+    ].join(" • ");
+
+    exportChartsToPDF({
+      title: "Rentabilidades",
+      subtitle,
+      charts: imgs,
+      filename: "rentabilidades_graficas.pdf"
+    });
+  }
+
+  // Tooltips % con “0.00%” y título legible (mes)
+  const pctTooltip = {
+    callbacks: {
+      title: (items:any[]) => items?.[0]?.label ?? "",
+      label: (ctx:any) => {
+        const label = ctx.dataset.label || "";
+        const v = Number(ctx.parsed.y ?? ctx.raw ?? 0);
+        return `${label}: ${fmt2(v)}%`;
+      }
+    }
+  };
 
   return (
     <div style={{display:"grid", gap:"1rem"}}>
       {/* Filtros */}
-      <div className="card" style={{display:"grid", gap:".7rem", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr"}}>
-        <input className="input" type="date" value={filtros.desde} onChange={e=>setFiltros(f=>({...f,desde:e.target.value}))}/>
-        <input className="input" type="date" value={filtros.hasta} onChange={e=>setFiltros(f=>({...f,hasta:e.target.value}))}/>
-        <select className="select" value={filtros.idTipoCliente} onChange={e=>setFiltros(f=>({...f,idTipoCliente:Number(e.target.value)}))}>
-          <option value={0}>Todos los tipos de cliente</option>
-          {catTiposCliente.map(c=><option key={c.id} value={c.id}>{c.nombre}</option>)}
-        </select>
-        <select className="select" value={filtros.idTipoTransaccion} onChange={e=>setFiltros(f=>({...f,idTipoTransaccion:Number(e.target.value)}))}>
-          <option value={0}>Contado/Crédito</option>
-          {catTiposTrans.map(c=><option key={c.id} value={c.id}>{c.nombre}</option>)}
-        </select>
-        <div style={{display:"flex",gap:".5rem"}}>
-          <select className="select" value={filtros.idCategoriaProducto} onChange={e=>setFiltros(f=>({...f,idCategoriaProducto:Number(e.target.value)}))} style={{width:"100%"}}>
-            <option value={0}>Todas las categorías</option>
-            {catCategorias.map(c=><option key={c.id} value={c.id}>{c.nombre}</option>)}
-          </select>
-          <button className="secondary" onClick={limpiar}>Limpiar</button>
+      <div className="card" style={{display:"grid", gap:".7rem"}}>
+        <div style={{display:"grid", gridTemplateColumns:"200px 200px 1fr", gap:".6rem"}}>
+          <div>
+            <label>Últimos N meses</label>
+            <input
+              className="input"
+              type="number"
+              min={1} max={24}
+              value={f.months}
+              onChange={e=>setF({...f, months: Math.max(1, Math.min(24, Number(e.target.value)||1))})}
+            />
+          </div>
+          <div>
+            <label>Tipo de transacción</label>
+            <select
+              className="select"
+              value={f.idTipoTransaccion}
+              onChange={e=>setF({...f, idTipoTransaccion: Number(e.target.value) as 0|1|2})}
+            >
+              <option value={0}>Todas</option>
+              <option value={1}>Contado</option>
+              <option value={2}>Crédito</option>
+            </select>
+          </div>
+          <div style={{display:"flex", gap:".5rem", alignItems:"end", justifyContent:"flex-end"}}>
+            <button className="secondary" onClick={limpiar} disabled={loading}>Limpiar</button>
+            <button className="secondary" onClick={exportPDF} disabled={loading}>Exportar PDF</button>
+          </div>
         </div>
       </div>
 
       {/* KPIs */}
       <div className="card" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:".7rem"}}>
-        <div><div style={{opacity:.7}}>Ventas</div><div style={{fontWeight:700}}>Q {resumen.venta.toLocaleString()}</div></div>
-        <div><div style={{opacity:.7}}>Costo</div><div style={{fontWeight:700}}>Q {resumen.costo.toLocaleString()}</div></div>
-        <div><div style={{opacity:.7}}>Margen bruto</div><div style={{fontWeight:700}}>Q {resumen.margenB.toLocaleString()}</div></div>
-        <div><div style={{opacity:.7}}>Gastos asignados</div><div style={{fontWeight:700}}>Q {resumen.gastos.toLocaleString()}</div></div>
-        <div><div style={{opacity:.7}}>Margen neto</div><div style={{fontWeight:700}}>Q {resumen.margenN.toLocaleString()}</div></div>
+        <div><div style={{opacity:.7}}>Ventas</div><div style={{fontWeight:700}}>{fmtQ(kpis.venta)}</div></div>
+        <div><div style={{opacity:.7}}>Costo</div><div style={{fontWeight:700}}>{fmtQ(kpis.costo)}</div></div>
+        <div><div style={{opacity:.7}}>Margen bruto</div><div style={{fontWeight:700}}>{fmtQ(kpis.margenB)}</div></div>
+        <div><div style={{opacity:.7}}>Gastos</div><div style={{fontWeight:700}}>{fmtQ(kpis.gastos)}</div></div>
+        <div><div style={{opacity:.7}}>Margen neto</div><div style={{fontWeight:700}}>{fmtQ(kpis.margenN)}</div></div>
       </div>
 
-      {/* Gráfica 1: Ventas vs Margen neto por mes */}
+      {/* G1: Línea Ventas, MB y MN (absolutos) */}
       <div className="card">
-        <h3 style={{marginTop:0}}>Ventas vs Margen neto (mensual)</h3>
-        <Bar
-          data={{
-            labels: etiquetasMes,
-            datasets: [
-              { label: "Ventas (Q)", data: ventasPorMes },
-              { label: "Margen neto (Q)", data: margenNetoPorMes },
-            ]
-          }}
-          options={{
-            responsive:true,
-            plugins:{ legend:{ position:"top" } },
-            scales:{ x:{ grid:{display:false} }, y:{ beginAtZero:true } }
-          }}
-        />
-      </div>
-
-      {/* Gráfica 2: DSO promedio por mes */}
-      <div className="card">
-        <h3 style={{marginTop:0}}>DSO promedio (días)</h3>
+        <h3 style={{marginTop:0}}>Tendencia: Ventas, Margen bruto y Margen neto</h3>
         <Line
+          ref={lineAbsRef}
           data={{
-            labels: etiquetasMes,
-            datasets: [{ label: "DSO", data: dsoPorMes }]
+            labels,
+            datasets: [
+              { label: "Ventas (Q)", data: ventasLine },
+              { label: "Margen bruto (Q)", data: margenBLine },
+              { label: "Margen neto (Q)", data: margenNLine },
+            ]
           }}
           options={{ responsive:true, plugins:{ legend:{ position:"top" } }, scales:{ y:{ beginAtZero:true } } }}
         />
       </div>
 
-      {/* Tabla detalle (segmento) */}
+      {/* G2: Línea Margen bruto vs Margen neto (Q) */}
       <div className="card">
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".6rem"}}>
-          <h3 style={{margin:0}}>Detalle por segmento</h3>
-          <div style={{display:"flex",gap:".5rem"}}>
-            <button className="secondary">Exportar CSV (UI)</button>
-            <button className="secondary">Imprimir (UI)</button>
-          </div>
-        </div>
+        <h3 style={{marginTop:0}}>Tendencia: Margen bruto vs Margen neto (Q)</h3>
+        <Line
+          ref={lineMBMNRef}
+          data={{
+            labels,
+            datasets: [
+              { label: "Margen bruto (Q)", data: margenBLine },
+              { label: "Margen neto (Q)", data: margenNLine },
+            ]
+          }}
+          options={{ responsive:true, plugins:{ legend:{ position:"top" } }, scales:{ y:{ beginAtZero:true } } }}
+        />
+      </div>
 
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Mes</th>
-              <th>Tipo cliente</th>
-              <th>Transacción</th>
-              <th>Categoría producto</th>
-              <th style={{textAlign:"right"}}>Ventas</th>
-              <th style={{textAlign:"right"}}>Costo</th>
-              <th style={{textAlign:"right"}}>M. bruto</th>
-              <th style={{textAlign:"right"}}>Gastos</th>
-              <th style={{textAlign:"right"}}>M. neto</th>
-              <th style={{textAlign:"right"}}>DSO</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtrado.map((r,i)=>(
-              <tr key={i}>
-                <td>{r.mes_inicio}</td>
-                <td>{r.nombre_tipo_cliente}</td>
-                <td>{r.nombre_tipo_transaccion}</td>
-                <td>{r.nombre_categoria_producto}</td>
-                <td style={{textAlign:"right"}}>Q {r.total_venta.toLocaleString()}</td>
-                <td style={{textAlign:"right"}}>Q {r.total_costo.toLocaleString()}</td>
-                <td style={{textAlign:"right"}}>Q {r.margen_bruto.toLocaleString()}</td>
-                <td style={{textAlign:"right"}}>Q {r.gastos_asignados.toLocaleString()}</td>
-                <td style={{textAlign:"right"}}>Q {r.margen_neto.toLocaleString()}</td>
-                <td style={{textAlign:"right"}}>{r.dso_dias_prom ?? "-"}</td>
-              </tr>
-            ))}
-            {filtrado.length===0 && (
-              <tr><td colSpan={10} style={{padding:"1rem"}}>Sin datos en este filtro (UI).</td></tr>
-            )}
-          </tbody>
-        </table>
+      {/* G3: Línea % Márgenes */}
+      <div className="card">
+        <h3 style={{marginTop:0}}>Tendencia: % Margen bruto y % Margen neto</h3>
+        <Line
+          ref={linePctRef}
+          data={{
+            labels,
+            datasets: [
+              { label: "% Margen bruto", data: margenBPctLine },
+              { label: "% Margen neto", data: margenNPctLine },
+            ]
+          }}
+          options={{
+            responsive:true,
+            plugins:{ legend:{ position:"top" }, tooltip: pctTooltip as any },
+            scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>`${fmt2(v as number)}%` as any } } }
+          }}
+        />
+      </div>
+
+      {/* G4: Línea % Gastos / Ventas */}
+      <div className="card">
+        <h3 style={{marginTop:0}}>Tendencia: % Gastos sobre ventas</h3>
+        <Line
+          ref={lineGVRef}
+          data={{
+            labels,
+            datasets: [
+              { label: "% Gastos/Ventas", data: gastosVentaPctLine },
+            ]
+          }}
+          options={{
+            responsive:true,
+            plugins:{ legend:{ position:"top" }, tooltip: pctTooltip as any },
+            scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>`${fmt2(v as number)}%` as any } } }
+          }}
+        />
+      </div>
+
+      {/* G5: Pie Ventas por tipo */}
+      <div className="card">
+        <h3 style={{marginTop:0}}>Ventas por tipo de transacción</h3>
+        <Pie
+          ref={pieRef}
+          data={ {
+            labels: ["Contado", "Crédito"],
+            datasets: [{ data: [pie.contado, pie.credito] }]
+          } }
+          options={{ responsive:true, plugins:{ legend:{ position:"top" } } }}
+        />
+        <div style={{marginTop:".6rem", display:"flex", gap:"1rem"}}>
+          <span>Contado: <b>{fmtQ(pie.contado)}</b></span>
+          <span>Crédito: <b>{fmtQ(pie.credito)}</b></span>
+        </div>
+      </div>
+
+      {/* Estado */}
+      <div className="card" style={{display:"flex",gap:".6rem",flexWrap:"wrap"}}>
+        <span className="badge secondary">{loading ? "Cargando…" : "Listo"}</span>
       </div>
     </div>
   );
