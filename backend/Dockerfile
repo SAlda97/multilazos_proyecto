@@ -24,4 +24,4 @@ RUN python manage.py collectstatic --noinput || true
 
 EXPOSE 8000
 
-CMD ["gunicorn", "mi_proyecto.wsgi:application", "--bind", "0.0.0.0:8000"]
+CMD gunicorn multilazos.wsgi:application --bind 0.0.0.0:$PORT
