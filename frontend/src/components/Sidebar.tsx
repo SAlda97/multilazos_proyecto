@@ -1,6 +1,8 @@
-import { NavLink } from "react-router-dom";
+// src/components/Sidebar.tsx
+import { NavLink, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { BRAND } from "../config/branding";
+import { useAuth } from "../auth/AuthContext"; // 👈 NUEVO
 
 type Item = { to: string; label: string };
 type Section = { id: string; title: string; items: Item[] };
@@ -9,17 +11,13 @@ const SECTIONS: Section[] = [
   {
     id: "analisis",
     title: "Análisis",
-    items: [
-
-      { to: "/rentabilidades", label: "Rentabilidades" },
-    ],
+    items: [{ to: "/rentabilidades", label: "Rentabilidades" }],
   },
   {
     id: "operacion",
     title: "Operación",
     items: [
       { to: "/ventas", label: "Ventas" },
-
       { to: "/clientes", label: "Clientes" },
       { to: "/productos", label: "Productos" },
       { to: "/gastos", label: "Gastos" },
@@ -61,22 +59,20 @@ const SECTIONS: Section[] = [
 ];
 
 export default function Sidebar() {
-  // estado de secciones abiertas (persistido)
+  // Estado de secciones abiertas
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const { logout } = useAuth();
+  const navigate = useNavigate();
 
   useEffect(() => {
-    const raw = localStorage.getItem("sidebar.open");
-    if (raw) setOpen(JSON.parse(raw));
-    else {
-      // por defecto, abre "Análisis" y "Operación"
-      setOpen({ analisis: true, operacion: true });
-    }
+    // 🔒 Arrancar SIEMPRE con todas cerradas al montar el sidebar
+    localStorage.removeItem("sidebar.open");
+    setOpen({});
   }, []);
 
+  // Si quieres volver a persistir una vez el usuario interactúe, lo dejamos igual:
   useEffect(() => {
-    if (Object.keys(open).length) {
-      localStorage.setItem("sidebar.open", JSON.stringify(open));
-    }
+    localStorage.setItem("sidebar.open", JSON.stringify(open));
   }, [open]);
 
   const toggle = (id: string) => setOpen((s) => ({ ...s, [id]: !s[id] }));
@@ -128,7 +124,6 @@ export default function Sidebar() {
               {open[sec.id] ? "▾" : "▸"} {sec.title}
             </button>
 
-
             {open[sec.id] && (
               <div style={{ padding: "0 .5rem .25rem .75rem" }}>
                 {sec.items.map((l) => (
@@ -148,7 +143,15 @@ export default function Sidebar() {
       </nav>
 
       <div style={{ marginTop: "auto", padding: "1rem" }}>
-        <button className="ghost" style={{ width: "100%" }}>
+        <button
+          className="ghost"
+          style={{ width: "100%" }}
+          onClick={() => {
+            if (!confirm("¿Realmente desea cerrar sesión?")) return;
+            logout();
+            navigate("/login", { replace: true });
+          }}
+        >
           Cerrar sesión
         </button>
       </div>

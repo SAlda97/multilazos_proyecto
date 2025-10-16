@@ -10,13 +10,17 @@ const http = axios.create({
 http.interceptors.response.use(
   (res: AxiosResponse) => res,
   (error: AxiosError) => {
+    const data = error.response?.data as any;
     const msg =
-      // si API devuelve { detail: "..."}
-      (error.response?.data as any)?.detail ??
+      data?.error ??                  // ← captura mensajes tipo { "error": "Usuario inactivo o inexistente" }
+      data?.message ??
+      (typeof data === "string" ? data : "") ??
       error.response?.statusText ??
       error.message ??
       "Error de red";
-    return Promise.reject(new Error(msg));
+    const e = new Error(msg);
+    (e as any).response = error.response;
+    return Promise.reject(e);
   }
 );
 

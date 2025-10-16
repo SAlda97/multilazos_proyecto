@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # =========================
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "True") == "True"
-ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+ALLOWED_HOSTS = ["*"] #Para habilitar todos los hosts en desarrollo, aplicar en Seminario
 
 # =========================
 # Aplicaciones instaladas

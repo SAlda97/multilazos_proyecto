@@ -1,3 +1,4 @@
+// src/pages/Rentabilidades.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend
@@ -8,10 +9,17 @@ import type { SerieMes } from "../types/rentabilidades";
 import { fmtQ, fmt2 } from "../utils/format";
 import { exportChartsToPDF } from "../utils/exportCharts"; //  NUEVO
 
-// PDF (se mantienen por si más adelante se quiere exportar tablas también)
-
-
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, ArcElement, Tooltip, Legend);
+
+// ---- Sticky & chart sizing ----
+const STICKY_TOP_FILTERS = 0;   // px (posición sticky del bloque Filtros)
+const TOP_KPIS = 104;           // px (alto aprox. de Filtros + separación)
+
+//  Caja contenedora para cada gráfica (altura RESPONSIVA y estable, evita el “bucle” de crecimiento)
+const CHART_BOX_STYLE: React.CSSProperties = {
+  height: "clamp(260px, 48vh, 460px)", // mínimo 260px, ideal ~48% de la ventana, máximo 460px
+  width: "100%",
+};
 
 type Filtros = {
   months: number;                 // últimos N meses
@@ -52,10 +60,8 @@ export default function Rentabilidades(){
     setF({ months: 6, idTipoTransaccion: 0 });
   }
 
-  // Helper: redondear a 2 decimales (número)
   const r2 = (x:number)=> Number((x ?? 0).toFixed(2));
 
-  // KPIs absolutos (respetan filtros)
   const kpis = useMemo(()=>({
     venta: tot.venta,
     costo: tot.costo,
@@ -64,33 +70,25 @@ export default function Rentabilidades(){
     margenN: tot.margen_neto
   }), [tot]);
 
-  // Series (absolutos)
   const ventasLine       = series.map(s => s.venta);
   const margenBLine      = series.map(s => s.margen_bruto);
   const margenNLine      = series.map(s => s.margen_neto);
 
-  // Series (%): redondeadas a 2 decimales para evitar etiquetas largas
   const margenBPctLine     = series.map(s => r2(s.margen_bruto_pct));
   const margenNPctLine     = series.map(s => r2(s.margen_neto_pct));
   const gastosVentaPctLine = series.map(s => r2(s.gastos_sobre_venta_pct));
 
-  // Pie ventas contado/credito (en la ventana de meses)
   const pieData = {
     labels: ["Contado", "Crédito"],
     datasets: [{ data: [pie.contado, pie.credito] }]
   };
 
-  // ⬇️ Exportar PDF con las GRÁFICAS como imágenes
   async function exportPDF(){
     if(!confirm("¿Desea exportar las gráficas a PDF?")) return;
 
-    // React-chartjs-2 expone el chart con ref.current
-    // toBase64Image(): retorna dataURL PNG del canvas
     const tryImg = (ref: any) => {
       const inst = ref?.current;
       if (!inst) return null;
-      // Compatibilidad: algunos wrappers cuelgan la instancia en ref.current
-      // como { canvas, toBase64Image, ... } o en ref.current?.canvas
       const fn = inst.toBase64Image ? inst.toBase64Image.bind(inst) : null;
       return fn ? fn("image/png", 1.0) : null;
     };
@@ -116,7 +114,6 @@ export default function Rentabilidades(){
     });
   }
 
-  // Tooltips % con “0.00%” y título legible (mes)
   const pctTooltip = {
     callbacks: {
       title: (items:any[]) => items?.[0]?.label ?? "",
@@ -128,10 +125,29 @@ export default function Rentabilidades(){
     }
   };
 
+  //  Opciones comunes a todas las gráficas para estabilidad de tamaño
+  const commonLineOpts = {
+    responsive: true,
+    maintainAspectRatio: false,   // usamos altura del contenedor (CHART_BOX_STYLE)
+    resizeDelay: 150,             // evita rebotes de redimensionamiento
+    plugins: { legend: { position: "top" } },
+    scales: { y: { beginAtZero: true } }
+  } as const;
+
   return (
     <div style={{display:"grid", gap:"1rem"}}>
-      {/* Filtros */}
-      <div className="card" style={{display:"grid", gap:".7rem"}}>
+      {/* Filtros (sticky) */}
+      <div
+        className="card"
+        style={{
+          display:"grid",
+          gap:".7rem",
+          position:"sticky",
+          top: STICKY_TOP_FILTERS,
+          zIndex:50,
+          background:"white"
+        }}
+      >
         <div style={{display:"grid", gridTemplateColumns:"200px 200px 1fr", gap:".6rem"}}>
           <div>
             <label>Últimos N meses</label>
@@ -162,8 +178,19 @@ export default function Rentabilidades(){
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="card" style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:".7rem"}}>
+      {/* KPIs (sticky) */}
+      <div
+        className="card"
+        style={{
+          display:"grid",
+          gridTemplateColumns:"repeat(5,1fr)",
+          gap:".7rem",
+          position:"sticky",
+          top: TOP_KPIS,
+          zIndex:40,
+          background:"white"
+        }}
+      >
         <div><div style={{opacity:.7}}>Ventas</div><div style={{fontWeight:700}}>{fmtQ(kpis.venta)}</div></div>
         <div><div style={{opacity:.7}}>Costo</div><div style={{fontWeight:700}}>{fmtQ(kpis.costo)}</div></div>
         <div><div style={{opacity:.7}}>Margen bruto</div><div style={{fontWeight:700}}>{fmtQ(kpis.margenB)}</div></div>
@@ -171,89 +198,99 @@ export default function Rentabilidades(){
         <div><div style={{opacity:.7}}>Margen neto</div><div style={{fontWeight:700}}>{fmtQ(kpis.margenN)}</div></div>
       </div>
 
-      {/* G1: Línea Ventas, MB y MN (absolutos) */}
+      {/* G1 */}
       <div className="card">
         <h3 style={{marginTop:0}}>Tendencia: Ventas, Margen bruto y Margen neto</h3>
-        <Line
-          ref={lineAbsRef}
-          data={{
-            labels,
-            datasets: [
-              { label: "Ventas (Q)", data: ventasLine },
-              { label: "Margen bruto (Q)", data: margenBLine },
-              { label: "Margen neto (Q)", data: margenNLine },
-            ]
-          }}
-          options={{ responsive:true, plugins:{ legend:{ position:"top" } }, scales:{ y:{ beginAtZero:true } } }}
-        />
+        <div style={CHART_BOX_STYLE}>
+          <Line
+            ref={lineAbsRef}
+            data={{
+              labels,
+              datasets: [
+                { label: "Ventas (Q)", data: ventasLine },
+                { label: "Margen bruto (Q)", data: margenBLine },
+                { label: "Margen neto (Q)", data: margenNLine },
+              ]
+            }}
+            options={commonLineOpts as any}
+          />
+        </div>
       </div>
 
-      {/* G2: Línea Margen bruto vs Margen neto (Q) */}
+      {/* G2 */}
       <div className="card">
         <h3 style={{marginTop:0}}>Tendencia: Margen bruto vs Margen neto (Q)</h3>
-        <Line
-          ref={lineMBMNRef}
-          data={{
-            labels,
-            datasets: [
-              { label: "Margen bruto (Q)", data: margenBLine },
-              { label: "Margen neto (Q)", data: margenNLine },
-            ]
-          }}
-          options={{ responsive:true, plugins:{ legend:{ position:"top" } }, scales:{ y:{ beginAtZero:true } } }}
-        />
+        <div style={CHART_BOX_STYLE}>
+          <Line
+            ref={lineMBMNRef}
+            data={{
+              labels,
+              datasets: [
+                { label: "Margen bruto (Q)", data: margenBLine },
+                { label: "Margen neto (Q)", data: margenNLine },
+              ]
+            }}
+            options={commonLineOpts as any}
+          />
+        </div>
       </div>
 
-      {/* G3: Línea % Márgenes */}
+      {/* G3 */}
       <div className="card">
         <h3 style={{marginTop:0}}>Tendencia: % Margen bruto y % Margen neto</h3>
-        <Line
-          ref={linePctRef}
-          data={{
-            labels,
-            datasets: [
-              { label: "% Margen bruto", data: margenBPctLine },
-              { label: "% Margen neto", data: margenNPctLine },
-            ]
-          }}
-          options={{
-            responsive:true,
-            plugins:{ legend:{ position:"top" }, tooltip: pctTooltip as any },
-            scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>`${fmt2(v as number)}%` as any } } }
-          }}
-        />
+        <div style={CHART_BOX_STYLE}>
+          <Line
+            ref={linePctRef}
+            data={{
+              labels,
+              datasets: [
+                { label: "% Margen bruto", data: margenBPctLine },
+                { label: "% Margen neto", data: margenNPctLine },
+              ]
+            }}
+            options={{
+              ...commonLineOpts,
+              plugins:{ ...(commonLineOpts as any).plugins, tooltip: { ...(pctTooltip as any) } },
+              scales:{ y:{ beginAtZero:true, ticks:{ callback:(v:any)=>`${fmt2(Number(v))}%` } } }
+            } as any}
+          />
+        </div>
       </div>
 
-      {/* G4: Línea % Gastos / Ventas */}
+      {/* G4 */}
       <div className="card">
         <h3 style={{marginTop:0}}>Tendencia: % Gastos sobre ventas</h3>
-        <Line
-          ref={lineGVRef}
-          data={{
-            labels,
-            datasets: [
-              { label: "% Gastos/Ventas", data: gastosVentaPctLine },
-            ]
-          }}
-          options={{
-            responsive:true,
-            plugins:{ legend:{ position:"top" }, tooltip: pctTooltip as any },
-            scales:{ y:{ beginAtZero:true, ticks:{ callback:(v)=>`${fmt2(v as number)}%` as any } } }
-          }}
-        />
+        <div style={CHART_BOX_STYLE}>
+          <Line
+            ref={lineGVRef}
+            data={{
+              labels,
+              datasets: [
+                { label: "% Gastos/Ventas", data: gastosVentaPctLine },
+              ]
+            }}
+            options={{
+              ...commonLineOpts,
+              plugins:{ ...(commonLineOpts as any).plugins, tooltip: { ...(pctTooltip as any) } },
+              scales:{ y:{ beginAtZero:true, ticks:{ callback:(v:any)=>`${fmt2(Number(v))}%` } } }
+            } as any}
+          />
+        </div>
       </div>
 
-      {/* G5: Pie Ventas por tipo */}
+      {/* G5 */}
       <div className="card">
         <h3 style={{marginTop:0}}>Ventas por tipo de transacción</h3>
-        <Pie
-          ref={pieRef}
-          data={ {
-            labels: ["Contado", "Crédito"],
-            datasets: [{ data: [pie.contado, pie.credito] }]
-          } }
-          options={{ responsive:true, plugins:{ legend:{ position:"top" } } }}
-        />
+        <div style={CHART_BOX_STYLE}>
+          <Pie
+            ref={pieRef}
+            data={ {
+              labels: ["Contado", "Crédito"],
+              datasets: [{ data: [pie.contado, pie.credito] }]
+            } }
+            options={{ responsive:true, maintainAspectRatio:false, resizeDelay:150, plugins:{ legend:{ position:"top" } } }}
+          />
+        </div>
         <div style={{marginTop:".6rem", display:"flex", gap:"1rem"}}>
           <span>Contado: <b>{fmtQ(pie.contado)}</b></span>
           <span>Crédito: <b>{fmtQ(pie.credito)}</b></span>
@@ -262,7 +299,7 @@ export default function Rentabilidades(){
 
       {/* Estado */}
       <div className="card" style={{display:"flex",gap:".6rem",flexWrap:"wrap"}}>
-        <span className="badge secondary">{loading ? "Cargando…" : "Listo"}</span>
+        <span className="badge secondary">{loading ? "Cargando…" : "Uso confidencial"}</span>
       </div>
     </div>
   );
