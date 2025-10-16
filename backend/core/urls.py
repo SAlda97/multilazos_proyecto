@@ -1,5 +1,5 @@
 # core/urls.py
-from django.urls import path
+from django.urls import path, re_path
 from .views import health, auth_login, auth_logout, auth_me  
 from .views_clientes import TipoClienteListView, TipoClienteDetailView
 from django.http import JsonResponse
@@ -16,11 +16,13 @@ from .views_cuotas import cuotas_list, cuota_asignar_pago
 from .views_pagos import pagos_list, pagos_detail,pago_asignaciones, cuotas_estado_por_venta
 from .views_estado_cuotas import estado_cuotas_list
 from .views_rentabilidades import rentabilidades_resumen
+from .views_security import  usuarios_list_create, usuarios_detail, usuarios_set_roles, roles_list_create, roles_detail, roles_set_permisos, permisos_list_create, permisos_detail, auth_login as auth_login_custom
+
 
 urlpatterns = [
     path('ping/', lambda r: JsonResponse({'ok': True})),
     path("health/", health, name="health"),
-    path("auth/login", auth_login, name="auth_login"),
+    path("auth/login", auth_login_custom, name="auth_login"),
     path("auth/logout", auth_logout, name="auth_logout"),
     path("auth/me", auth_me, name="auth_me"),
 
@@ -71,6 +73,25 @@ urlpatterns = [
     path("estado-cuotas/", estado_cuotas_list),
     # rentabilidades
     path("rentabilidades/resumen/", rentabilidades_resumen),
+
+    # Seguridad: usuarios, roles, permisos
+    path("seguridad/usuarios/", usuarios_list_create),
+    path("seguridad/usuarios/<int:id_usuario>/", usuarios_detail),
+    path("seguridad/usuarios/<int:id_usuario>/roles/", usuarios_set_roles),
+
+    path("seguridad/roles/", roles_list_create),
+    path("seguridad/roles/<int:id_rol>/", roles_detail),
+    path("seguridad/roles/<int:id_rol>/permisos/", roles_set_permisos),
+
+
+
+    path("seguridad/permisos/", permisos_list_create),
+    path("seguridad/permisos/<int:id_permiso>/", permisos_detail),
+
+
+   
+
+
 
     
 
